@@ -10,10 +10,12 @@
 //! which bind group belongs to which feature.
 
 pub mod atmosphere;
+pub mod fft;
 pub mod gpu;
 pub mod lens;
 pub mod near;
 pub mod nebula;
+pub mod optics;
 pub mod post;
 pub mod session;
 pub mod shaders;
