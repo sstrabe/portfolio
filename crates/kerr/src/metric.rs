@@ -28,6 +28,15 @@ pub struct KsTerms {
     pub l: V3,
 }
 
+impl KsTerms {
+    /// `g_{μν} u^μ v^ν` at the point these terms were evaluated at.
+    pub fn dot(&self, u: [f64; 4], v: [f64; 4]) -> f64 {
+        let lu = u[0] + self.l[0] * u[1] + self.l[1] * u[2] + self.l[2] * u[3];
+        let lv = v[0] + self.l[0] * v[1] + self.l[1] * v[2] + self.l[2] * v[3];
+        -u[0] * v[0] + u[1] * v[1] + u[2] * v[2] + u[3] * v[3] + self.f * lu * lv
+    }
+}
+
 /// [`KsTerms`] plus spatial gradients.
 #[derive(Clone, Copy, Debug)]
 pub struct KsGrad {
