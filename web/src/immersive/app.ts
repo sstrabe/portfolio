@@ -8,6 +8,7 @@ import { Controls } from "./input";
 import { Hud, T } from "./hud";
 import { Overlay, helpDialog } from "./overlay";
 import { PanelAtlas } from "./panels";
+import { flags } from "../flags";
 
 const EVENT_HORIZON = 1;
 const EVENT_DOCKED = 2;
@@ -17,8 +18,13 @@ const EVENT_CAPTURE = 4;
 export async function start(host: HTMLElement, fail: (reason: unknown) => void) {
   const stations = makeStations(portfolio);
 
+  const gui = !flags.noGui;
   host.innerHTML = `
-    <canvas class="scene" aria-label="A star cluster around a spinning black hole"></canvas>
+    <canvas class="scene" aria-label="A star cluster around a spinning black hole"></canvas>`;
+  if (gui) {
+    host.insertAdjacentHTML(
+      "beforeend",
+      `
     <header class="topbar">
       <h1>${esc(portfolio.owner.name)}</h1>
       <p>${esc(portfolio.owner.headline)}</p>
@@ -32,16 +38,17 @@ export async function start(host: HTMLElement, fail: (reason: unknown) => void) 
     <div class="touchpad" aria-hidden="true">
       <button data-k="forward">▲</button><button data-k="back">▼</button>
       <button data-k="boost">Boost</button><button data-k="brake">Brake</button>
-    </div>`;
+    </div>`,
+    );
+    host.querySelector(".plain-link")!.addEventListener("click", () => {
+      try {
+        localStorage.setItem("kerr-mode", "plain");
+      } catch {
+        // ignore
+      }
+    });
+  }
   const canvas = host.querySelector<HTMLCanvasElement>("canvas.scene")!;
-  const loader = host.querySelector<HTMLElement>(".loader")!;
-  host.querySelector(".plain-link")!.addEventListener("click", () => {
-    try {
-      localStorage.setItem("kerr-mode", "plain");
-    } catch {
-      // ignore
-    }
-  });
 
   if (!navigator.gpu) throw unsupported("WebGPU is not available");
   const adapter = await navigator.gpu.requestAdapter();
@@ -66,23 +73,31 @@ export async function start(host: HTMLElement, fail: (reason: unknown) => void) 
     : await createEngine(canvas, stations.length, stars, 1);
 
   const controls = new Controls(canvas);
-  const hud = new Hud();
   let highlight = -1;
-  const overlay = new Overlay(stations, portfolio, {
-    flyTo: (i) => {
-      controls.flyTo(i);
-      overlay.toast(`Autopilot: ${stations[i].title}`, 2500);
-    },
-    undock: () => controls.requestUndock(),
-    highlight: (i) => {
-      highlight = i;
-    },
-  });
-  const help = helpDialog();
-  host.append(overlay.labels, overlay.nav, overlay.dock, overlay.toasts, hud.el, help);
-  controls.onHelp = () => (help.open ? help.close() : help.showModal());
-  controls.onAutopilotCancelled = () => overlay.toast("Autopilot off", 1500);
-  host.querySelector(".help-button")!.addEventListener("click", () => help.showModal());
+  // Everything HTML on top of the scene; absent when the GUI is disabled.
+  const ui = gui ? buildGui() : null;
+  function buildGui() {
+    const hud = new Hud();
+    const overlay: Overlay = new Overlay(stations, portfolio, {
+      flyTo: (i) => {
+        controls.flyTo(i);
+        overlay.toast(`Autopilot: ${stations[i].title}`, 2500);
+      },
+      undock: () => controls.requestUndock(),
+      highlight: (i) => {
+        highlight = i;
+      },
+    });
+    const help = helpDialog();
+    host.append(overlay.labels, overlay.nav, overlay.dock, overlay.toasts, hud.el, help);
+    controls.onHelp = () => (help.open ? help.close() : help.showModal());
+    controls.onAutopilotCancelled = () => overlay.toast("Autopilot off", 1500);
+    host.querySelector(".help-button")!.addEventListener("click", () => help.showModal());
+    host
+      .querySelectorAll<HTMLElement>(".touchpad button")
+      .forEach((b) => controls.bindTouchButton(b, b.dataset.k as "forward" | "back" | "boost" | "brake"));
+    return { hud, overlay };
+  }
   // Captures must happen in the same task as the frame that drew them.
   const afterFrame: Array<() => void> = [];
   const savePhoto = () =>
@@ -96,9 +111,9 @@ export async function start(host: HTMLElement, fail: (reason: unknown) => void) 
         setTimeout(() => URL.revokeObjectURL(a.href), 1000);
       }, "image/png"),
     );
-  host.querySelector(".photo-button")!.addEventListener("click", savePhoto);
+  host.querySelector(".photo-button")?.addEventListener("click", savePhoto);
   addEventListener("keydown", (e) => {
-    if (e.code === "KeyP" && !e.repeat && !(e.target instanceof HTMLInputElement)) savePhoto();
+    if (gui && e.code === "KeyP" && !e.repeat && !(e.target instanceof HTMLInputElement)) savePhoto();
   });
   if (params.has("debug")) {
     const snapshot = async () => {
@@ -112,7 +127,7 @@ export async function start(host: HTMLElement, fail: (reason: unknown) => void) 
   }
 
   const atlas = new PanelAtlas(stations, (c) => engine.uploadPanelAtlas(c));
-  overlay.inSceneCards = atlas.htmlMode;
+  if (ui) ui.overlay.inSceneCards = atlas.htmlMode;
   await atlas.paint();
 
   new ResizeObserver(() => {
@@ -133,10 +148,12 @@ export async function start(host: HTMLElement, fail: (reason: unknown) => void) 
     try {
       engine.setHighlight(highlight);
       engine.frame(dt, controls.sample(dt));
-      const tel = engine.telemetry();
-      hud.update(tel);
-      const status = tel[T.Status];
-      overlay.update(engine.stations(), canvas.clientWidth, canvas.clientHeight, status === 1 ? tel[T.Station] : -1);
+      if (ui) {
+        const tel = engine.telemetry();
+        ui.hud.update(tel);
+        const target = tel[T.Status] === 1 ? tel[T.Station] : -1;
+        ui.overlay.update(engine.stations(), canvas.clientWidth, canvas.clientHeight, target);
+      }
       const ev = engine.events();
       for (let i = 0; i < ev.length; i += 2) handleEvent(ev[i], ev[i + 1]);
       afterFrame.splice(0).forEach((f) => f());
@@ -146,10 +163,10 @@ export async function start(host: HTMLElement, fail: (reason: unknown) => void) 
     }
     if (!started) {
       started = true;
-      loader.remove();
-      if (!sessionStorage.getItem("kerr-help-seen")) {
+      host.querySelector(".loader")?.remove();
+      if (ui && !sessionStorage.getItem("kerr-help-seen")) {
         sessionStorage.setItem("kerr-help-seen", "1");
-        overlay.toast("Press H for controls. Click a station to fly there.", 7000);
+        ui.overlay.toast("Press H for controls. Click a station to fly there.", 7000);
       }
     }
     avg = avg * 0.95 + dt * 1000 * 0.05;
@@ -161,13 +178,15 @@ export async function start(host: HTMLElement, fail: (reason: unknown) => void) 
 
   let lastCaptureToast = -Infinity;
   function handleEvent(code: number, arg: number) {
+    if (code === EVENT_DOCKED) controls.autopilot = -1;
+    const overlay = ui?.overlay;
+    if (!overlay) return;
     switch (code) {
       case EVENT_HORIZON:
         overlay.hideDock();
         overlay.toast("You crossed the event horizon. Nothing gets out — except you, respawned at home.", 7000);
         break;
       case EVENT_DOCKED:
-        controls.autopilot = -1;
         overlay.showDock(arg);
         break;
       case EVENT_UNDOCKED:

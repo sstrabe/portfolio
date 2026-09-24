@@ -77,8 +77,16 @@ URL switches:
 | ------------ | ------------------------------------------------------------ |
 | `?plain`     | Force the plain page (remembered via the "Plain version" link) |
 | `?immersive` | Force the WebGPU nucleus (also overrides reduced-motion)     |
+| `?noGui=off` | Show the HTML GUI (see feature flags below)                  |
 | `?debug`     | Exposes `window.kerrDebug` (engine, controls, snapshot)      |
 | `?debug&headless` | Renders offscreen and captures frames. For automated checks in headless browsers, which cannot display WebGPU canvases |
+
+Feature flags live in `web/src/flags.ts`. Each flag has a default and can be
+overridden from the URL with `?name=on|off`:
+
+| Flag    | Default | Effect |
+| ------- | ------- | ------ |
+| `noGui` | on      | Hides all HTML controls in the immersive mode (title bar, station list, labels, HUD, dock panel, toasts, help, touch pad), leaving only the rendered scene. Keyboard and mouse flight, `1`–`8` autopilot and docking still work. Station cards drawn into the scene are part of the world and stay. |
 
 The immersive mode starts automatically when WebGPU is available, unless the
 visitor prefers reduced motion or last chose the plain version.
