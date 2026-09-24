@@ -4,7 +4,7 @@
 //
 // Bind groups of the trace pass, one per feature so features can be
 // developed independently:
-//   0  core: frame, HQ frame, nearby star discs, output image
+//   0  core: frame, HQ frame, nearby star discs, output image, narrowband image
 //   1  near field: star systems and planets          (near.wgsl, planet.wgsl)
 //   2  atmospheres and clouds                        (atmosphere.wgsl)
 //   3  nebulae                                       (nebula.wgsl)
@@ -13,13 +13,16 @@
 // ---------------------------------------------------------------------------
 
 struct HqFrame {
-    size: vec4<u32>,        // trace width, height, frame index, flags
+    size: vec4<u32>,        // trace width, height, frame index, flags (HQ_*)
     view: vec4<f32>,        // jitter x, y (px), wall time (s), pixel solid angle (sr)
     radiometry: vec4<f32>,  // W/m² per flux unit (L☉/M²), sky radiance scale, exposure, point-source σ (rad)
     near: vec4<u32>,        // star systems, planets, unused, unused
     units: vec4<f32>,       // km per M, seconds per M, c (km/s), unused
     rgb: array<vec4<f32>, 12>,  // spectrum → linear sRGB: rows R0–R3, G0–G3, B0–B3
 }
+
+// `hq.size.w` flags.
+const HQ_NARROWBAND: u32 = 1u;  // the trace also writes the narrowband bins
 
 // A nearby star close enough to show a disc (far field, Kerr traced).
 struct Sphere {

@@ -5,6 +5,7 @@
 //! ```text
 //! kerr-nucleus [--stars N] [--fov DEG] [--scale S] [--start cluster|planet]
 //! kerr-nucleus --headless 1280x720 [--seconds S] [--out shot.png]
+//! kerr-nucleus [--optics eye|camera|astro] [--palette true|hubble] [--ev STOPS]
 //! ```
 
 mod app;
@@ -26,6 +27,7 @@ pub struct Options {
     /// Headless: thrust forward (with boost) for the whole flight.
     pub burn: bool,
     pub start: start::Start,
+    pub optics: render_hq::post::Settings,
 }
 
 const USAGE: &str = "\
@@ -40,6 +42,9 @@ OPTIONS:
     --scale S           Fixed ray-tracing resolution scale 0.2–1 (default: adaptive)
     --start WHERE       cluster (default): orbiting 800 AU from the hole;
                         planet: just above the nearest Earth-like world at dawn
+    --optics KIND       eye, camera (default) or astro (a telescope)
+    --palette P         true (default) or hubble (narrowband [S II], Hα, [O III])
+    --ev STOPS          Exposure compensation (astro: over its base exposure)
     --headless WxH      Render offscreen and save a PNG instead of opening a window
     --seconds S         Headless: seconds of flight before the shot (default 2)
     --out FILE          Headless: output path (default kerr-nucleus.png)
@@ -52,6 +57,8 @@ CONTROLS:
     W/S thrust, A/D strafe, Space/C up/down, arrows turn, Q/E roll,
     Shift boost (5x), X brake (to the local rest frame),
     , / . halve / double the time warp, F11 fullscreen, Ctrl+Q quit.
+    P cycles eye, camera and astrograph; H toggles the Hubble palette;
+    [ / ] exposure down / up a stop; Backspace resets it.
     Telemetry is shown in the window title.
 
 SCALE:
@@ -75,6 +82,7 @@ fn parse() -> Result<Options, String> {
         near_star: None,
         burn: false,
         start: start::Start::Cluster,
+        optics: Default::default(),
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -99,6 +107,22 @@ fn parse() -> Result<Options, String> {
             }
             "--burn" => o.burn = true,
             "--start" => o.start = value("--start")?.parse()?,
+            "--optics" => {
+                o.optics.optics = match value("--optics")?.as_str() {
+                    "eye" => render_hq::optics::Optics::Eye,
+                    "camera" => render_hq::optics::Optics::Camera,
+                    "astro" => render_hq::optics::Optics::Astro,
+                    other => return Err(format!("unknown optics {other:?} (eye, camera or astro)")),
+                }
+            }
+            "--palette" => {
+                o.optics.palette = match value("--palette")?.as_str() {
+                    "true" => render_hq::optics::Palette::True,
+                    "hubble" => render_hq::optics::Palette::Hubble,
+                    other => return Err(format!("unknown palette {other:?} (true or hubble)")),
+                }
+            }
+            "--ev" => o.optics.ev = value("--ev")?.parse().map_err(|e| format!("--ev: {e}"))?,
             other => return Err(format!("unknown option {other}\n\n{USAGE}")),
         }
     }

@@ -4,8 +4,9 @@
 //! 2. `images` compute: every body's lensed images on the past light cone
 //!    (shared with the web renderer),
 //! 3. `trace` compute: per-pixel spectral ray tracing into the HDR target,
-//! 4. post: point sources splatted into the HDR target, then optics, tone
-//!    mapping and upscaling to the output.
+//! 4. post (`post.rs`): temporal accumulation and upscaling, point sources,
+//!    lens ghosts, the FFT convolution with the point-spread function,
+//!    metering, the eye model and tone mapping, at the output resolution.
 
 use crate::atmosphere::Atmospheres;
 use crate::lens::Lensing;
@@ -42,7 +43,6 @@ enum Capture {
 struct Hdr {
     width: u32,
     height: u32,
-    view: wgpu::TextureView,
     core_bg: wgpu::BindGroup,
 }
 
@@ -135,6 +135,16 @@ impl Gpu {
         limits.max_storage_textures_per_shader_stage = supported.max_storage_textures_per_shader_stage;
         limits.max_sampled_textures_per_shader_stage = supported.max_sampled_textures_per_shader_stage;
         limits.max_uniform_buffers_per_shader_stage = supported.max_uniform_buffers_per_shader_stage;
+        // The FFT keeps a 2048-point row (or two 1024-point columns) of two
+        // complex numbers per point in workgroup memory.
+        const FFT_WORKGROUP_BYTES: u32 = 2048 * 16 + 1024;
+        if supported.max_compute_workgroup_storage_size < FFT_WORKGROUP_BYTES {
+            return Err(format!(
+                "the GPU offers {} bytes of workgroup memory ({FFT_WORKGROUP_BYTES} needed)",
+                supported.max_compute_workgroup_storage_size
+            ));
+        }
+        limits.max_compute_workgroup_storage_size = supported.max_compute_workgroup_storage_size;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -214,22 +224,25 @@ impl Gpu {
             },
             count: None,
         };
+        let storage_image = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::WriteOnly,
+                format: HDR_FORMAT,
+                view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            count: None,
+        };
         let core_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("trace core"),
             entries: &[
                 uniform_entry(0),
                 uniform_entry(1),
                 uniform_entry(2),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: HDR_FORMAT,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
+                storage_image(3),
+                // Narrowband bins for the Hubble palette (`post_common.wgsl`).
+                storage_image(4),
             ],
         });
         let near = NearField::new(&device);
@@ -382,19 +395,22 @@ impl Gpu {
         if matches!(&self.hdr, Some(t) if t.width == w && t.height == h) {
             return;
         }
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("hdr"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: HDR_FORMAT,
-            usage: wgpu::TextureUsages::STORAGE_BINDING
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&Default::default());
+        let target = |label| {
+            self.device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: HDR_FORMAT,
+                    usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        };
+        let view = target("hdr");
+        let nb_view = target("narrowband");
         let core_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("trace core"),
             layout: &self.core_layout,
@@ -403,10 +419,12 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 1, resource: self.hq_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.sphere_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&nb_view) },
             ],
         });
-        self.post.attach(&self.device, &view);
-        self.hdr = Some(Hdr { width: w, height: h, view, core_bg });
+        let out = self.output_size();
+        self.post.attach(&self.device, &self.queue, &view, &nb_view, (w, h), out);
+        self.hdr = Some(Hdr { width: w, height: h, core_bg });
     }
 
     /// Pick the near field for this frame (before building `HqUniforms`).
@@ -477,9 +495,11 @@ impl Gpu {
             pass.set_bind_group(5, self.lens.bind_group(), &[]);
             pass.dispatch_workgroups(w.div_ceil(TRACE_TILE), h.div_ceil(TRACE_TILE), 1);
         }
-        self.post.encode(&mut enc, &hdr.view, &out_view);
+        self.post.encode(&mut enc, &out_view);
         self.encode_capture(&mut enc);
         self.queue.submit([enc.finish()]);
+        // Deliver finished read-backs (exposure) without waiting.
+        let _ = self.device.poll(wgpu::PollType::Poll);
         if let Some(frame) = frame {
             self.queue.present(frame);
         }

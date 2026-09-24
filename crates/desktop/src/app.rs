@@ -56,6 +56,7 @@ impl State {
         let gpu = pollster::block_on(Gpu::new(instance, Some(surface), (size.width, size.height), n, cap))?;
         let mut session = Session::new(world, gpu);
         session.fov_deg = o.fov;
+        session.gpu.post.settings = o.optics;
         let scale = o.scale.unwrap_or(1.0);
         session.gpu.set_render_scale(scale);
         let now = Instant::now();

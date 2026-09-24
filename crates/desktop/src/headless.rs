@@ -14,6 +14,7 @@ pub fn run(o: &Options) -> Result<(), String> {
     let gpu = pollster::block_on(Gpu::new(crate::instance(), None, (w, h), n, cap))?;
     let mut s = Session::new(world, gpu);
     s.fov_deg = o.fov;
+    s.gpu.post.settings = o.optics;
     s.gpu.set_render_scale(o.scale.unwrap_or(1.0));
 
     let mut controls = Controls::default();
@@ -42,6 +43,14 @@ pub fn run(o: &Options) -> Result<(), String> {
     enc.write_header().and_then(|mut wr| wr.write_image_data(&raw[8..])).map_err(|e| format!("png: {e}"))?;
     let t = s.world.telemetry();
     println!("wrote {} ({cw}x{ch}) at τ = {:.1} M, t = {:.1} M, r = {:.2} M", o.out, t.tau, t.t, t.r);
+    let m = s.metering();
+    println!(
+        "exposure {:.3e} per W m⁻² sr⁻¹; metered {:.3e} cd/m², 95th percentile {:.3e} cd/m², fifth star {:.3e} cd/m²",
+        s.exposure(),
+        m.metered,
+        m.p95,
+        m.fifth_star
+    );
     Ok(())
 }
 

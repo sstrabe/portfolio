@@ -39,6 +39,10 @@ pub struct HqUniforms {
     pub rgb: [[f32; 4]; 12],
 }
 
+/// `HqUniforms::size[3]` flag: the trace also writes the narrowband bins
+/// (mirrors `HQ_NARROWBAND` in `hq_common.wgsl`).
+pub const HQ_NARROWBAND: u32 = 1;
+
 /// What features see when they update for a frame.
 pub struct FrameContext<'a> {
     pub device: &'a wgpu::Device,
