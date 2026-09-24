@@ -3,7 +3,7 @@
 //! portfolio stations or content.
 //!
 //! ```text
-//! kerr-nucleus [--stars N] [--fov DEG] [--scale S] [--start cluster|planet]
+//! kerr-nucleus [--stars N] [--fov DEG] [--scale S] [--start cluster|planet[:KIND[:ALTITUDE[:VIEW]]]]
 //! kerr-nucleus --headless 1280x720 [--seconds S] [--out shot.png]
 //! ```
 
@@ -39,7 +39,12 @@ OPTIONS:
     --fov DEG           Vertical field of view (default 75)
     --scale S           Fixed ray-tracing resolution scale 0.2–1 (default: adaptive)
     --start WHERE       cluster (default): orbiting 800 AU from the hole;
-                        planet: just above the nearest Earth-like world at dawn
+                        planet: just above the nearest Earth-like world at dawn;
+                        planet:KIND[:ALTITUDE[:VIEW]] for other planets and views:
+                          KIND ocean, rocky, desert, ice, lava, gas, icegiant,
+                               ringed or any (nearest of that kind)
+                          ALTITUDE km, or planet radii with an r suffix (2r)
+                          VIEW dawn, day (sun glint), limb, nadir, night, disc
     --headless WxH      Render offscreen and save a PNG instead of opening a window
     --seconds S         Headless: seconds of flight before the shot (default 2)
     --out FILE          Headless: output path (default kerr-nucleus.png)

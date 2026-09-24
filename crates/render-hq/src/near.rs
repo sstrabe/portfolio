@@ -45,6 +45,7 @@ pub struct PlanetGpu {
     pub surface: [f32; 4],
     pub rings: [f32; 4],
     pub ids: [u32; 4],
+    pub detail: [f32; 4],
 }
 
 pub struct SelectedSystem {
@@ -135,7 +136,8 @@ pub fn select(world: &World, pixel_angle: f64) -> Selection {
             // Rotation angle at the planet's event, then back to time 0.
             let angle = p.rotation(t * SECONDS_PER_M) - omega_s * t_km / C_KM_S;
             let atmo_top = p.atmosphere.map_or(0.0, |a| a.top_km);
-            let (ri, ro, rt) = p.rings.map_or((0.0, 0.0, 0.0), |r| (r.inner_km, r.outer_km, r.optical_depth));
+            let (ri, ro, rt, rd) =
+                p.rings.map_or((0.0, 0.0, 0.0, 0.0), |r| (r.inner_km, r.outer_km, r.optical_depth, r.dust));
             let distance_km = vec3::norm(centre);
             sel.planets.push(SelectedPlanet {
                 system: slot,
@@ -153,8 +155,9 @@ pub fn select(world: &World, pixel_angle: f64) -> Selection {
                         p.equilibrium_temperature as f32,
                         atmo_top as f32,
                     ],
-                    rings: [ri as f32, ro as f32, rt as f32, 0.0],
+                    rings: [ri as f32, ro as f32, rt as f32, rd as f32],
                     ids: [p.kind.index(), p.seed, slot as u32, sel.planets.len() as u32],
+                    detail: [p.wind_speed_m_s as f32, 0.0, 0.0, 0.0],
                 },
             });
         }
@@ -262,7 +265,7 @@ mod tests {
     #[test]
     fn layouts_match_wgsl() {
         assert_eq!(std::mem::size_of::<SystemGpu>(), 5 * 16);
-        assert_eq!(std::mem::size_of::<PlanetGpu>(), 7 * 16);
+        assert_eq!(std::mem::size_of::<PlanetGpu>(), 8 * 16);
     }
 
     /// A pilot at rest next to a planet sees it where the coordinates put
