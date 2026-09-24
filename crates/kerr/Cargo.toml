@@ -1,0 +1,8 @@
+[package]
+name = "kerr"
+description = "Kerr spacetime in Kerr–Schild coordinates: geodesics, retarded N-body perturbations, radiation reaction, accelerated observers and lensing."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
