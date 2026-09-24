@@ -197,7 +197,13 @@ impl ApplicationHandler for App {
                 s.controls.release_all();
                 s.capture_mouse(false);
             }
-            WindowEvent::KeyboardInput { event, .. } => {
+            WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
+                // On focus, Windows reports keys it believes are held as
+                // synthetic presses; stale state there once held a strafe
+                // key down forever. Only real presses count.
+                if is_synthetic && event.state == ElementState::Pressed {
+                    return;
+                }
                 let PhysicalKey::Code(code) = event.physical_key else { return };
                 match s.controls.key(code, event.state == ElementState::Pressed) {
                     Some(Action::Quit) => event_loop.exit(),
