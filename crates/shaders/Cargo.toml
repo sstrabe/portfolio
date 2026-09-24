@@ -1,0 +1,11 @@
+[package]
+name = "shaders"
+description = "WGSL sources for the renderer, assembled from shared pieces and validated natively with naga."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }
