@@ -111,29 +111,51 @@ fn cube_uv(d: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(d.x / a.z, d.y / a.z, select(4.0, 5.0, d.z < 0.0));
 }
 
-// One layer of point stars on a cube-face grid. `fp` is the pixel footprint
-// on the source sphere (rad), which lensing may stretch or squeeze.
+// Direction of cube-face coordinates (inverse of `cube_uv`).
+fn cube_dir(face: u32, uv: vec2<f32>) -> vec3<f32> {
+    switch face {
+        case 0u: { return vec3<f32>(1.0, uv.x, uv.y); }
+        case 1u: { return vec3<f32>(-1.0, uv.x, uv.y); }
+        case 2u: { return vec3<f32>(uv.x, 1.0, uv.y); }
+        case 3u: { return vec3<f32>(uv.x, -1.0, uv.y); }
+        case 4u: { return vec3<f32>(uv.x, uv.y, 1.0); }
+        default: { return vec3<f32>(uv.x, uv.y, -1.0); }
+    }
+}
+
+// One layer of point stars scattered over the sphere through a cube-face
+// grid. Cells near face edges and corners cover less sky (solid angle
+// ∝ (1 + u² + v²)^(-3/2)), so the chance that a cell holds a star is scaled
+// by that factor: the result is uniform on the sphere, with no trace of the
+// cube. `fp` is the pixel footprint on the source sphere (rad), which
+// lensing may stretch or squeeze.
 fn star_layer(d: vec3<f32>, cells: f32, density: f32, flux_scale: f32, fp: f32, g: f32, seed: u32) -> vec3<f32> {
     let c = cube_uv(d);
+    let face = u32(c.z);
     let grid = (c.xy * 0.5 + 0.5) * cells;
     let cell = floor(grid);
     let ic = vec2<u32>(cell);
-    let face = u32(c.z);
     let h = hash3(vec3<u32>(ic.x, ic.y, face + seed * 16u));
     let h2 = hash3(vec3<u32>(ic.y + 911u, ic.x + 17u, face * 7u + seed * 131u + 3u));
-    // Cell angular size shrinks towards face edges.
-    let cell_ang = (0.5 * PI / cells) / (1.0 + 0.5 * dot(c.xy, c.xy));
-    let star = cell + 0.2 + 0.6 * h.yz;
-    let ang = length(grid - star) * cell_ang;
+    let centre = (cell + 0.5) / cells * 2.0 - 1.0;
+    let q = 1.0 + dot(centre, centre);
+    let jac = pow(q, -1.5);
+    // Angular side of a face-centre cell, and of this one.
+    let cell0 = 2.0 / cells;
+    let cell_ang = cell0 * pow(q, -0.75);
+    // True angular distance to the star (isotropic, unlike grid distance).
+    let star_dir = normalize(cube_dir(face, (cell + 0.08 + 0.84 * h.yz) / cells * 2.0 - 1.0));
+    let ang = length(d - star_dir);
     let sigma2 = STAR_SIGMA * STAR_SIGMA + fp * fp;
-    let present = select(0.0, 1.0, h.x < density);
+    let present = select(0.0, 1.0, h.x < density * jac);
     let flux = flux_scale * pow(h2.x, 5.0) * present;
     let temp = 2600.0 + 26000.0 * pow(h2.y, 3.5);
     let resolved = flux * exp(-0.5 * ang * ang / sigma2) / (TAU * sigma2);
     // Only the owning cell is evaluated, so a layer is drawn as resolved
     // stars only while their blur is well inside a cell; beyond that it
-    // fades to the mean intensity of its (now unresolved) stars.
-    let mean = 0.5 * density * flux_scale / 6.0 / (cell_ang * cell_ang);
+    // fades to the mean intensity of its (now unresolved) stars, which is
+    // the same in every direction.
+    let mean = 0.3 * density * flux_scale / 6.0 / (cell0 * cell0);
     let w = smoothstep(0.1, 0.25, fp / cell_ang);
     let resolved_col = blackbody(temp * g) * resolved;
     let mean_col = blackbody(5200.0 * g) * mean;
