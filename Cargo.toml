@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/kerr", "crates/shaders", "crates/engine"]
-default-members = ["crates/kerr", "crates/shaders"]
+members = ["crates/kerr", "crates/shaders", "crates/render", "crates/engine", "crates/desktop"]
+default-members = ["crates/kerr", "crates/shaders", "crates/render", "crates/desktop"]
 
 [workspace.package]
 edition = "2024"

@@ -614,6 +614,23 @@ mod tests {
     }
 
     #[test]
+    fn runs_without_stations() {
+        let cfg = WorldConfig {
+            cluster: ClusterConfig { stars: 16, compact_objects: 1, history_len: 64, ..Default::default() },
+            stations: Vec::new(),
+            ..Default::default()
+        };
+        let mut w = World::new(cfg);
+        let input = Input { thrust: [1.0, 0.0, 0.0], autopilot: 0, brake: true, ..Default::default() };
+        for _ in 0..120 {
+            w.step(1.0 / 60.0, &input);
+        }
+        assert!(w.views.is_empty());
+        assert_eq!(w.status, PilotStatus::Free);
+        assert!(w.telemetry().tau > 0.0);
+    }
+
+    #[test]
     fn falling_into_the_hole_respawns() {
         let mut w = small_world();
         // Released from rest: zero angular momentum, so it plunges.

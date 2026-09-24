@@ -24,7 +24,9 @@ instead.
 ```
 crates/kerr      Physics core (pure Rust, tested natively)
 crates/shaders   WGSL sources, validated natively with naga
-crates/engine    wasm-bindgen + wgpu (WebGPU) front end
+crates/render    wgpu renderer + per-frame session, shared by web and desktop
+crates/engine    wasm-bindgen front end for the web page
+crates/desktop   Native desktop app (no portfolio content)
 web/             Vite + TypeScript: content, plain page, immersive UI
 scripts/         build-wasm.sh
 docs/physics.md  What is simulated, how, and which parts are approximations
@@ -90,6 +92,31 @@ overridden from the URL with `?name=on|off`:
 
 The immersive mode starts automatically when WebGPU is available, unless the
 visitor prefers reduced motion or last chose the plain version.
+
+## Desktop app
+
+`crates/desktop` builds `kerr-nucleus`, a native window with the same physics
+and renderer on Vulkan, Metal or DX12. It shows only the black hole, the
+cluster and your ship, with no stations or portfolio content. Telemetry is in
+the window title.
+
+```sh
+cargo run -p desktop --release                  # window
+cargo run -p desktop --release -- --help        # options
+cargo run -p desktop --release -- --headless 1920x1080 --seconds 5 --out shot.png
+```
+
+Controls: `W`/`S`, `A`/`D`, `Space`/`C` to thrust, drag or arrow keys to
+turn, `Q`/`E` to roll, `Shift` to boost, `F11` for fullscreen, `Ctrl+Q` to
+quit. The ray-tracing resolution adapts to the frame rate unless you pass
+`--scale`. Set `WGPU_BACKEND=vulkan|metal|dx12` to pick a backend. CI builds
+binaries for Linux, Windows and macOS as workflow artifacts.
+
+**RT cores.** The desktop app doesn't use hardware ray tracing. RT cores find
+where *straight* rays hit triangles in a spatial index. Here the rays are
+curved light paths, integrated step by step. That arithmetic runs on the
+ordinary shader cores, and the scene has no triangle geometry for RT cores to
+test.
 
 ## Controls
 

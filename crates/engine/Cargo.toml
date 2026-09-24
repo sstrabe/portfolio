@@ -10,10 +10,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 kerr = { path = "../kerr" }
-bytemuck = { version = "1.25", features = ["derive"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-shaders = { path = "../shaders" }
+render = { path = "../render" }
 wasm-bindgen = "=0.2.128"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

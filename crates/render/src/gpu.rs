@@ -1,4 +1,5 @@
-//! WebGPU renderer (through wgpu's browser backend).
+//! The renderer, shared by the browser engine (wgpu's WebGPU backend) and the
+//! native desktop app (Vulkan / Metal / DX12).
 //!
 //! Passes per frame:
 //! 1. `images` compute: every body's direct and around-the-hole image on the
@@ -9,8 +10,7 @@
 //!    body-image point sprites additively at full resolution.
 
 use kerr::history::Sample;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use wgpu::util::DeviceExt;
 
 pub use crate::frame::{
@@ -20,7 +20,7 @@ pub use crate::frame::{
 const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 pub struct Gpu {
-    /// Held for the page's lifetime: if the browser's `GPU` object is
+    /// Held for the renderer's lifetime: if the browser's `GPU` object is
     /// garbage collected, Chrome stops delivering buffer-mapping and other
     /// asynchronous events for the device.
     _instance: wgpu::Instance,
@@ -36,6 +36,8 @@ pub struct Gpu {
     history_buf: wgpu::Buffer,
     meta_buf: wgpu::Buffer,
     panel_buf: wgpu::Buffer,
+    /// Station-card atlas; only the web engine uploads into it.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     atlas: wgpu::Texture,
     linear: wgpu::Sampler,
 
@@ -49,7 +51,7 @@ pub struct Gpu {
     sky_bg: wgpu::BindGroup,
     hdr: Option<(wgpu::TextureView, wgpu::BindGroup, u32, u32)>,
     /// Headless mode only: a requested / finished readback of the output.
-    capture: Rc<RefCell<Capture>>,
+    capture: Arc<Mutex<Capture>>,
 }
 
 /// Where frames go: the page's canvas, or (headless) an offscreen texture.
@@ -83,25 +85,16 @@ fn offscreen_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
 }
 
 impl Gpu {
-    /// Render into `canvas`, or with `None` into an offscreen texture of
+    /// Render to `surface`, or with `None` into an offscreen texture of
     /// `size` whose frames can be read back (headless checks and tools).
     pub async fn new(
-        canvas: Option<web_sys::HtmlCanvasElement>,
+        instance: wgpu::Instance,
+        surface: Option<wgpu::Surface<'static>>,
         size: (u32, u32),
         bodies: u32,
         history_cap: u32,
     ) -> Result<Self, String> {
-        let (width, height) = canvas.as_ref().map_or(size, |c| (c.width(), c.height()));
-        let (width, height) = (width.max(1), height.max(1));
-        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        desc.backends = wgpu::Backends::BROWSER_WEBGPU;
-        let instance = wgpu::Instance::new(desc);
-        let surface = match canvas {
-            Some(c) => {
-                Some(instance.create_surface(wgpu::SurfaceTarget::Canvas(c)).map_err(|e| format!("surface: {e}"))?)
-            }
-            None => None,
-        };
+        let (width, height) = (size.0.max(1), size.1.max(1));
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -111,12 +104,13 @@ impl Gpu {
             })
             .await
             .map_err(|e| format!("adapter: {e}"))?;
-        let mut limits = wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
+        let supported = adapter.limits();
+        let mut limits = wgpu::Limits::downlevel_defaults().using_resolution(supported.clone());
         let history_bytes = (history_cap as u64 + 1) * bodies as u64 * 32;
-        limits.max_storage_buffer_binding_size = limits
-            .max_storage_buffer_binding_size
-            .max(history_bytes.min(adapter.limits().max_storage_buffer_binding_size));
-        limits.max_buffer_size = limits.max_buffer_size.max(history_bytes.min(adapter.limits().max_buffer_size));
+        limits.max_storage_buffer_binding_size =
+            limits.max_storage_buffer_binding_size.max(history_bytes.min(supported.max_storage_buffer_binding_size));
+        limits.max_buffer_size = limits.max_buffer_size.max(history_bytes.min(supported.max_buffer_size));
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("kerr"),
@@ -126,10 +120,8 @@ impl Gpu {
             .await
             .map_err(|e| format!("device: {e}"))?;
 
-        // Surface WebGPU validation errors in the console instead of losing them.
-        device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| {
-            web_sys::console::error_1(&format!("WebGPU: {e}").into());
-        }));
+        // Report validation errors instead of losing them.
+        device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| log_error(&format!("GPU: {e}"))));
 
         let output = match surface {
             Some(surface) => {
@@ -137,8 +129,10 @@ impl Gpu {
                     .get_default_config(&adapter, width, height)
                     .ok_or("surface is not supported by the adapter")?;
                 config.alpha_mode = wgpu::CompositeAlphaMode::Opaque;
-                // Readable so the page can save the final image.
-                config.usage |= wgpu::TextureUsages::COPY_SRC;
+                // Readable (where supported) so the page can save the image.
+                if surface.get_capabilities(&adapter).usages.contains(wgpu::TextureUsages::COPY_SRC) {
+                    config.usage |= wgpu::TextureUsages::COPY_SRC;
+                }
                 config.present_mode = wgpu::PresentMode::Fifo;
                 surface.configure(&device, &config);
                 Output::Surface { surface, config }
@@ -305,7 +299,7 @@ impl Gpu {
             sprite_bg,
             sky_bg,
             hdr: None,
-            capture: Rc::default(),
+            capture: Arc::default(),
         })
     }
 
@@ -395,6 +389,12 @@ impl Gpu {
         self.queue.write_buffer(&self.panel_buf, 0, bytemuck::cast_slice(panels));
     }
 
+    /// Native: block until submitted work (and pending buffer maps) finish.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn wait(&self) {
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+    }
+
     /// Upload one history column (ring slot, or `history_cap` for "now").
     pub fn write_history_column(&self, slot: u32, samples: &[Sample]) {
         let data: Vec<[f32; 4]> = samples
@@ -416,6 +416,7 @@ impl Gpu {
 
     /// Copy a 2-D canvas (the panel atlas drawn by the web layer, possibly
     /// through HTML-in-Canvas) into the atlas texture.
+    #[cfg(target_arch = "wasm32")]
     pub fn upload_atlas(&self, canvas: web_sys::HtmlCanvasElement) {
         let w = canvas.width().min(ATLAS_COLS * ATLAS_CELL_W);
         let h = canvas.height().min(ATLAS_ROWS * ATLAS_CELL_H);
@@ -456,8 +457,8 @@ impl Gpu {
             },
             Output::Offscreen { texture, .. } => (None, texture.create_view(&Default::default())),
         };
-        let Some((hdr_view, composite_bg, _, _)) = &self.hdr else { return };
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+        let Some((hdr_view, composite_bg, _, _)) = &self.hdr else { return };
         {
             let mut pass =
                 enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("images"), timestamp_writes: None });
@@ -519,14 +520,18 @@ impl Gpu {
 
     /// Headless mode: ask for the next frame's pixels (RGBA8, sRGB encoded).
     pub fn request_capture(&self) {
-        let mut c = self.capture.borrow_mut();
+        let mut c = self.capture();
         if matches!(*c, Capture::Idle | Capture::Ready(_)) {
             *c = Capture::Requested;
         }
     }
 
+    fn capture(&self) -> MutexGuard<'_, Capture> {
+        self.capture.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn take_capture(&self) -> Option<Vec<u8>> {
-        let mut c = self.capture.borrow_mut();
+        let mut c = self.capture();
         match std::mem::take(&mut *c) {
             Capture::Ready(rgba) => Some(rgba),
             other => {
@@ -538,7 +543,7 @@ impl Gpu {
 
     fn encode_capture(&self, enc: &mut wgpu::CommandEncoder) {
         let Output::Offscreen { texture, width, height } = &self.output else { return };
-        if !matches!(*self.capture.borrow(), Capture::Requested) {
+        if !matches!(*self.capture(), Capture::Requested) {
             return;
         }
         let (width, height) = (*width, *height);
@@ -561,7 +566,7 @@ impl Gpu {
             },
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
-        *self.capture.borrow_mut() = Capture::Pending;
+        *self.capture() = Capture::Pending;
         let cell = self.capture.clone();
         let mapped = buffer.clone();
         enc.map_buffer_on_submit(&buffer, wgpu::MapMode::Read, .., move |result| {
@@ -577,7 +582,14 @@ impl Gpu {
                 Some(rgba)
             });
             mapped.unmap();
-            *cell.borrow_mut() = rgba.map_or(Capture::Idle, Capture::Ready);
+            *cell.lock().unwrap_or_else(|e| e.into_inner()) = rgba.map_or(Capture::Idle, Capture::Ready);
         });
     }
+}
+
+fn log_error(msg: &str) {
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::error_1(&msg.into());
+    #[cfg(not(target_arch = "wasm32"))]
+    eprintln!("{msg}");
 }
