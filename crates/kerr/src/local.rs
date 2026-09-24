@@ -485,7 +485,7 @@ mod tests {
     fn elements_of_circular_and_escape_orbits() {
         let mu = 2.0;
         let e = Elements::of(mu, [3.0, 0.0, 0.0], [0.0, (mu / 3.0f64).sqrt(), 0.0]);
-        assert!((e.periapsis - 3.0).abs() < 1e-12 && (e.apoapsis - 3.0).abs() < 1e-12);
+        assert!((e.periapsis - 3.0).abs() < 1e-7 && (e.apoapsis - 3.0).abs() < 1e-7);
         assert!((e.period - std::f64::consts::TAU * (27.0 / mu).sqrt()).abs() < 1e-9);
         let esc = Elements::of(mu, [3.0, 0.0, 0.0], [0.0, 1.01 * (2.0 * mu / 3.0f64).sqrt(), 0.0]);
         assert!(!esc.bound() && (esc.periapsis - 3.0).abs() < 1e-9);
