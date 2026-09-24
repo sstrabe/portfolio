@@ -199,14 +199,15 @@ pub fn select(cluster: &Cluster, pos: V3) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// Lower bound on the coordinate time before a ship at `pos` moving at
-/// coordinate speed `speed` can enter any star's range.
-pub fn time_to_range(cluster: &Cluster, pos: V3, speed: f64) -> f64 {
+/// Lower bound on the coordinate time before a ship at `pos` can enter any
+/// star's range, whatever it does (nothing closes in faster than light;
+/// the 2% covers the stars' own motion and the metric's slack).
+pub fn time_to_range(cluster: &Cluster, pos: V3) -> f64 {
     let gap = (0..cluster.len())
         .filter(|&i| is_star(cluster, i))
         .map(|i| vec3::norm(vec3::sub(cluster.bodies[i].position(), pos)) - FADE_OUT * hill_radius(cluster, i))
         .fold(f64::INFINITY, f64::min);
-    gap.max(0.0) / speed.max(1e-12)
+    gap.max(0.0) / 1.02
 }
 
 impl Local {

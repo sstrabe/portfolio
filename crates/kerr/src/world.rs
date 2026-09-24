@@ -787,11 +787,7 @@ impl World {
             .map(|p| Local::new(&k, &self.cluster, p.star, pos));
         let mut until = match &self.local {
             Some(l) => l.valid_until,
-            None => {
-                let u = self.pilot.e[0];
-                let speed = vec3::norm([u[1], u[2], u[3]]) / u[0];
-                t + local::time_to_range(&self.cluster, pos, speed).max(1.0)
-            }
+            None => t + local::time_to_range(&self.cluster, pos).max(1.0),
         };
         if let Some(ts) = &self.target_system {
             until = until.min(ts.valid_until);

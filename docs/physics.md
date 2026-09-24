@@ -88,6 +88,38 @@ clock. A freely falling pilot's `dt/dτ` stays finite at the horizon in
 Kerr–Schild time (about 1.5 for a drop from rest). The big speed-ups come
 from high speed or from hovering.
 
+## Planets and their stars — weak-field perturbation (desktop)
+
+Inside a star's Hill sphere around the hole, the star and its planets pull
+on the ship ([`local.rs`](../crates/kerr/src/local.rs)). Their fields are
+far too weak to curve spacetime noticeably (`GM/rc²` ≈ 10⁻⁹ in low orbit),
+so they are a perturbation added to the Kerr geodesic, as a 4-acceleration
+orthogonal to `u` next to the thrust:
+
+- **The field** is Newton's, `g = −Σ GM d/|d|³` (uniform-sphere inside a
+  body), at the ship's event. The star moves on its Kerr geodesic,
+  extrapolated to second order between refreshes that keep its position
+  error below 10⁻⁶ of the ship's distance. Planets sit on their Kepler orbits
+  around it at the same coordinate time, exactly where the renderer draws
+  them.
+- **At any speed** it enters in the star's frame as
+  `F = g∥ + γ²(1 + v²) g⊥`, `a = F + (F·u)u`: the linearised field of a
+  static mass. It is Newton at orbital speeds and bends light twice as much
+  as Newton would.
+- **It fades out** between 3 and 6 Hill radii, where the hole's tide
+  dominates by ≳ 30×. Far from stars the ship follows the plain geodesic.
+- **Substeps** resolve 1/50 rad of an orbit at the ship's distance from each
+  body, but not below what a fast fly-by needs (so the high-γ drift of
+  needlessly small steps does not come back). A low orbit keeps its period
+  to 10⁻⁶ over several orbits; what drift remains is the star's real tide.
+- **Solid bodies.** A substep that would enter a planet stops at its surface
+  and the ship lands, riding the rotating surface until it thrusts. Flying
+  into a star puts the ship back at 10 stellar radii. The surface is the
+  sphere of the planet's mean radius (no terrain relief), and there is no
+  atmospheric drag.
+- **Warp.** Near a body the time warp is capped so an orbit at the ship's
+  distance takes at least 5 s of wall time.
+
 ## Seeing — exact rays, modelled appearance
 
 A pixel looking in ship-frame direction `n` traces the past-directed null
