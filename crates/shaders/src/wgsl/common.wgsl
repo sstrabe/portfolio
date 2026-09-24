@@ -29,7 +29,7 @@ struct Frame {
 // Per-body metadata; times relative to the observer.
 struct BodyMeta {
     a: vec4<f32>,  // valid-from time, death time, temperature (K), luminosity
-    b: vec4<f32>,  // kind (0 station, 1 compact, 2 star), size, generation, reserved
+    b: vec4<f32>,  // kind (0 station, 1 compact, 2 star), beacon strength, generation, reserved
 }
 
 // One (body, image order) slot of the image finder.

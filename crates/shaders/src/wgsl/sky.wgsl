@@ -130,9 +130,11 @@ fn star_layer(d: vec3<f32>, cells: f32, density: f32, flux_scale: f32, fp: f32, 
     let flux = flux_scale * pow(h2.x, 5.0) * present;
     let temp = 2600.0 + 26000.0 * pow(h2.y, 3.5);
     let resolved = flux * exp(-0.5 * ang * ang / sigma2) / (TAU * sigma2);
-    // Mean intensity of unresolved stars for large footprints.
-    let mean = density * flux_scale / 6.0 / (cell_ang * cell_ang);
-    let w = smoothstep(0.35, 1.0, fp / cell_ang);
+    // Only the owning cell is evaluated, so a layer is drawn as resolved
+    // stars only while their blur is well inside a cell; beyond that it
+    // fades to the mean intensity of its (now unresolved) stars.
+    let mean = 0.5 * density * flux_scale / 6.0 / (cell_ang * cell_ang);
+    let w = smoothstep(0.1, 0.25, fp / cell_ang);
     let resolved_col = blackbody(temp * g) * resolved;
     let mean_col = blackbody(5200.0 * g) * mean;
     return mix(resolved_col, mean_col, w);
@@ -186,15 +188,16 @@ fn sky_radiance(dir: vec3<f32>, g: f32, fp: f32) -> vec3<f32> {
     let lanes = 1.0 - 0.85 * dust * exp(-pow(lat / 0.07, 2.0));
     let clumps = 0.55 + 0.9 * fbm(d * 18.0);
     let bulge = 0.35 * exp(-pow(lat / 0.55, 2.0));
-    var diffuse = (band * clumps * lanes * 1.4 + bulge + 0.04) * 0.02;
+    var diffuse = (band * clumps * lanes * 1.4 + bulge + 0.04) * 0.008;
     diffuse *= 1.0 + 0.5 * pow(max(d.x, 0.0), 6.0);
     let diffuse_col = blackbody(4300.0 * g) * diffuse;
 
     // Point stars in three magnitude classes; denser near the plane.
     let dens = 0.35 + 0.65 * band;
-    var stars = star_layer(dir, 60.0, 0.55, 1.5e-4, fp, g, 1u);
-    stars += star_layer(dir, 170.0, 0.6 * dens, 3.0e-5, fp, g, 2u);
-    stars += star_layer(dir, 420.0, 0.8 * dens, 6.0e-6, fp, g, 3u);
+    var stars = star_layer(dir, 24.0, 0.5, 6.0e-4, fp, g, 1u);
+    stars += star_layer(dir, 60.0, 0.55, 1.5e-4, fp, g, 2u);
+    stars += star_layer(dir, 170.0, 0.6 * dens, 3.0e-5, fp, g, 3u);
+    stars += star_layer(dir, 420.0, 0.8 * dens, 6.0e-6, fp, g, 4u);
 
     return (diffuse_col + stars) * g4;
 }

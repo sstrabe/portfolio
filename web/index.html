@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en" data-mode="plain">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>%OWNER% — Portfolio</title>
+    <meta name="description" content="%DESCRIPTION%" />
+    <meta name="color-scheme" content="dark light" />
+    <script>
+      // Decide before first paint whether to show the plain page or boot
+      // the WebGPU nucleus. ?plain / ?immersive override a remembered choice.
+      (function () {
+        var mode = "plain";
+        try {
+          var q = new URLSearchParams(location.search);
+          var pref = localStorage.getItem("kerr-mode");
+          var want = q.has("plain") ? "plain" : q.has("immersive") ? "immersive" : pref;
+          var capable = "gpu" in navigator && typeof WebAssembly === "object";
+          var bot = /bot|crawl|spider|slurp|preview|lighthouse/i.test(navigator.userAgent);
+          var calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+          if (capable && !bot && want !== "plain" && (want === "immersive" || !calm)) mode = "immersive";
+        } catch (e) {}
+        document.documentElement.dataset.mode = mode;
+      })();
+    </script>
+    <link rel="stylesheet" href="/src/styles/main.css" />
+  </head>
+  <body>
+    <!--plain-->
+    <div id="immersive" class="immersive" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

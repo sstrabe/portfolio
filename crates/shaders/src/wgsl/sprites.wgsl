@@ -35,7 +35,10 @@ fn vs_sprite(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     }
     let bm = bodies[ii / 2u];
     let g = st.info.x;
-    let e = st.info.y * frame.screen.w;
+    var e = st.info.y * frame.screen.w;
+    if (bm.b.x < 0.5) {
+        e *= bm.b.y;
+    }
     if (e < 2.0e-3) {
         return o;
     }

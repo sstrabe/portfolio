@@ -19,7 +19,7 @@ pub const ATLAS_CELL_H: u32 = 320;
 pub const PANEL_RANGE: f64 = 160.0;
 pub const MAX_RAY_STEPS: u32 = 420;
 pub const NEWTON_ITERATIONS: u32 = 2;
-pub const SPRITE_GAIN: f32 = 2000.0;
+pub const SPRITE_GAIN: f32 = 12000.0;
 
 /// Mirrors `struct Frame` in `common.wgsl`.
 #[repr(C)]
@@ -157,7 +157,8 @@ pub fn build(world: &World, p: &FrameParams) -> Built {
     let meta = cluster
         .bodies
         .iter()
-        .map(|b| {
+        .enumerate()
+        .map(|(i, b)| {
             let kind = match b.params.kind {
                 BodyKind::Station => 0.0,
                 BodyKind::Compact => 1.0,
@@ -166,7 +167,7 @@ pub fn build(world: &World, p: &FrameParams) -> Built {
             let died = if b.died_at.is_finite() { (b.died_at - t_obs) as f32 } else { 1.0e30 };
             BodyMeta {
                 a: [(b.valid_from - t_obs) as f32, died, b.params.temperature as f32, b.params.luminosity as f32],
-                b: [kind, 0.0, b.generation as f32, 0.0],
+                b: [kind, beacon(world, i), b.generation as f32, 0.0],
             }
         })
         .collect();
@@ -192,6 +193,15 @@ pub fn build(world: &World, p: &FrameParams) -> Built {
         .collect();
 
     Built { uniforms, meta, panels: panels(world, &obs, t_obs, p.highlight), stations }
+}
+
+/// Station beacons fade out as the station's own card becomes legible.
+fn beacon(world: &World, i: usize) -> f32 {
+    match world.views.get(i) {
+        Some(v) if v.visible => ((v.distance - 12.0) / 30.0).clamp(0.0, 1.0) as f32,
+        Some(_) => 1.0,
+        None => 1.0,
+    }
 }
 
 /// In-scene panels for the nearest visible stations, each a card facing the

@@ -9,6 +9,8 @@
 //!    body-image point sprites additively at full resolution.
 
 use kerr::history::Sample;
+use std::cell::RefCell;
+use std::rc::Rc;
 use wgpu::util::DeviceExt;
 
 pub use crate::frame::{
@@ -18,10 +20,13 @@ pub use crate::frame::{
 const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 pub struct Gpu {
+    /// Held for the page's lifetime: if the browser's `GPU` object is
+    /// garbage collected, Chrome stops delivering buffer-mapping and other
+    /// asynchronous events for the device.
+    _instance: wgpu::Instance,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    surface: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
+    output: Output,
     srgb_encode: bool,
     render_scale: f32,
     bodies: u32,
@@ -43,20 +48,64 @@ pub struct Gpu {
     sprite_bg: wgpu::BindGroup,
     sky_bg: wgpu::BindGroup,
     hdr: Option<(wgpu::TextureView, wgpu::BindGroup, u32, u32)>,
+    /// Headless mode only: a requested / finished readback of the output.
+    capture: Rc<RefCell<Capture>>,
+}
+
+/// Where frames go: the page's canvas, or (headless) an offscreen texture.
+enum Output {
+    Surface { surface: wgpu::Surface<'static>, config: wgpu::SurfaceConfiguration },
+    Offscreen { texture: wgpu::Texture, width: u32, height: u32 },
+}
+
+#[derive(Default)]
+enum Capture {
+    #[default]
+    Idle,
+    Requested,
+    Pending,
+    Ready(Vec<u8>),
+}
+
+const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+fn offscreen_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("offscreen output"),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: OFFSCREEN_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    })
 }
 
 impl Gpu {
-    pub async fn new(canvas: web_sys::HtmlCanvasElement, bodies: u32, history_cap: u32) -> Result<Self, String> {
-        let (width, height) = (canvas.width().max(1), canvas.height().max(1));
+    /// Render into `canvas`, or with `None` into an offscreen texture of
+    /// `size` whose frames can be read back (headless checks and tools).
+    pub async fn new(
+        canvas: Option<web_sys::HtmlCanvasElement>,
+        size: (u32, u32),
+        bodies: u32,
+        history_cap: u32,
+    ) -> Result<Self, String> {
+        let (width, height) = canvas.as_ref().map_or(size, |c| (c.width(), c.height()));
+        let (width, height) = (width.max(1), height.max(1));
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
         desc.backends = wgpu::Backends::BROWSER_WEBGPU;
         let instance = wgpu::Instance::new(desc);
-        let surface =
-            instance.create_surface(wgpu::SurfaceTarget::Canvas(canvas)).map_err(|e| format!("surface: {e}"))?;
+        let surface = match canvas {
+            Some(c) => {
+                Some(instance.create_surface(wgpu::SurfaceTarget::Canvas(c)).map_err(|e| format!("surface: {e}"))?)
+            }
+            None => None,
+        };
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
+                compatible_surface: surface.as_ref(),
                 force_fallback_adapter: false,
                 apply_limit_buckets: false,
             })
@@ -77,12 +126,30 @@ impl Gpu {
             .await
             .map_err(|e| format!("device: {e}"))?;
 
-        let mut config =
-            surface.get_default_config(&adapter, width, height).ok_or("surface is not supported by the adapter")?;
-        config.alpha_mode = wgpu::CompositeAlphaMode::Opaque;
-        config.present_mode = wgpu::PresentMode::Fifo;
-        surface.configure(&device, &config);
-        let srgb_encode = !config.format.is_srgb();
+        // Surface WebGPU validation errors in the console instead of losing them.
+        device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| {
+            web_sys::console::error_1(&format!("WebGPU: {e}").into());
+        }));
+
+        let output = match surface {
+            Some(surface) => {
+                let mut config = surface
+                    .get_default_config(&adapter, width, height)
+                    .ok_or("surface is not supported by the adapter")?;
+                config.alpha_mode = wgpu::CompositeAlphaMode::Opaque;
+                // Readable so the page can save the final image.
+                config.usage |= wgpu::TextureUsages::COPY_SRC;
+                config.present_mode = wgpu::PresentMode::Fifo;
+                surface.configure(&device, &config);
+                Output::Surface { surface, config }
+            }
+            None => Output::Offscreen { texture: offscreen_texture(&device, width, height), width, height },
+        };
+        let out_format = match &output {
+            Output::Surface { config, .. } => config.format,
+            Output::Offscreen { .. } => OFFSCREEN_FORMAT,
+        };
+        let srgb_encode = !out_format.is_srgb();
 
         let frame_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame"),
@@ -187,9 +254,8 @@ impl Gpu {
             alpha: wgpu::BlendComponent::OVER,
         };
         let sky_pipeline = render("sky", &sky_mod, "vs_fullscreen", "fs_sky", HDR_FORMAT, None);
-        let composite_pipeline =
-            render("composite", &composite_mod, "vs_fullscreen", "fs_composite", config.format, None);
-        let sprite_pipeline = render("sprites", &sprites_mod, "vs_sprite", "fs_sprite", config.format, Some(additive));
+        let composite_pipeline = render("composite", &composite_mod, "vs_fullscreen", "fs_composite", out_format, None);
+        let sprite_pipeline = render("sprites", &sprites_mod, "vs_sprite", "fs_sprite", out_format, Some(additive));
 
         fn entry(binding: u32, buf: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
             wgpu::BindGroupEntry { binding, resource: buf.as_entire_binding() }
@@ -217,10 +283,10 @@ impl Gpu {
         });
 
         Ok(Self {
+            _instance: instance,
             device,
             queue,
-            surface,
-            config,
+            output,
             srgb_encode,
             render_scale: 0.5,
             bodies,
@@ -239,17 +305,26 @@ impl Gpu {
             sprite_bg,
             sky_bg,
             hdr: None,
+            capture: Rc::default(),
         })
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
         let (width, height) = (width.max(1), height.max(1));
-        if width == self.config.width && height == self.config.height {
+        if (width, height) == self.output_size() {
             return;
         }
-        self.config.width = width;
-        self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
+        match &mut self.output {
+            Output::Surface { surface, config } => {
+                config.width = width;
+                config.height = height;
+                surface.configure(&self.device, config);
+            }
+            Output::Offscreen { texture, width: w, height: h } => {
+                *texture = offscreen_texture(&self.device, width, height);
+                (*w, *h) = (width, height);
+            }
+        }
         self.hdr = None;
     }
 
@@ -262,13 +337,17 @@ impl Gpu {
     }
 
     pub fn output_size(&self) -> (u32, u32) {
-        (self.config.width, self.config.height)
+        match &self.output {
+            Output::Surface { config, .. } => (config.width, config.height),
+            Output::Offscreen { width, height, .. } => (*width, *height),
+        }
     }
 
     /// Size of the ray-traced HDR target.
     pub fn hdr_size(&self) -> (u32, u32) {
-        let w = ((self.config.width as f32 * self.render_scale).round() as u32).max(1);
-        let h = ((self.config.height as f32 * self.render_scale).round() as u32).max(1);
+        let (ow, oh) = self.output_size();
+        let w = ((ow as f32 * self.render_scale).round() as u32).max(1);
+        let h = ((oh as f32 * self.render_scale).round() as u32).max(1);
         (w, h)
     }
 
@@ -363,15 +442,20 @@ impl Gpu {
 
     pub fn render(&mut self) {
         self.ensure_hdr();
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.config);
-                return;
-            }
-            _ => return,
+        let (frame, out_view) = match &self.output {
+            Output::Surface { surface, config } => match surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
+                    let view = t.texture.create_view(&Default::default());
+                    (Some(t), view)
+                }
+                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                    surface.configure(&self.device, config);
+                    return;
+                }
+                _ => return,
+            },
+            Output::Offscreen { texture, .. } => (None, texture.create_view(&Default::default())),
         };
-        let out_view = frame.texture.create_view(&Default::default());
         let Some((hdr_view, composite_bg, _, _)) = &self.hdr else { return };
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         {
@@ -426,7 +510,74 @@ impl Gpu {
             pass.set_bind_group(0, &self.sprite_bg, &[]);
             pass.draw(0..6, 0..self.bodies * 2);
         }
+        self.encode_capture(&mut enc);
         self.queue.submit([enc.finish()]);
-        self.queue.present(frame);
+        if let Some(frame) = frame {
+            self.queue.present(frame);
+        }
+    }
+
+    /// Headless mode: ask for the next frame's pixels (RGBA8, sRGB encoded).
+    pub fn request_capture(&self) {
+        let mut c = self.capture.borrow_mut();
+        if matches!(*c, Capture::Idle | Capture::Ready(_)) {
+            *c = Capture::Requested;
+        }
+    }
+
+    pub fn take_capture(&self) -> Option<Vec<u8>> {
+        let mut c = self.capture.borrow_mut();
+        match std::mem::take(&mut *c) {
+            Capture::Ready(rgba) => Some(rgba),
+            other => {
+                *c = other;
+                None
+            }
+        }
+    }
+
+    fn encode_capture(&self, enc: &mut wgpu::CommandEncoder) {
+        let Output::Offscreen { texture, width, height } = &self.output else { return };
+        if !matches!(*self.capture.borrow(), Capture::Requested) {
+            return;
+        }
+        let (width, height) = (*width, *height);
+        let padded = (width as usize * 4).div_ceil(256) * 256;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("capture"),
+            size: (padded * height as usize) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        enc.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded as u32),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        *self.capture.borrow_mut() = Capture::Pending;
+        let cell = self.capture.clone();
+        let mapped = buffer.clone();
+        enc.map_buffer_on_submit(&buffer, wgpu::MapMode::Read, .., move |result| {
+            let rgba = result.ok().and_then(|_| {
+                let data = mapped.slice(..).get_mapped_range().ok()?;
+                let row = width as usize * 4;
+                let mut rgba = Vec::with_capacity(8 + row * height as usize);
+                rgba.extend_from_slice(&width.to_le_bytes());
+                rgba.extend_from_slice(&height.to_le_bytes());
+                for y in 0..height as usize {
+                    rgba.extend_from_slice(&data[y * padded..y * padded + row]);
+                }
+                Some(rgba)
+            });
+            mapped.unmap();
+            *cell.borrow_mut() = rgba.map_or(Capture::Idle, Capture::Ready);
+        });
     }
 }

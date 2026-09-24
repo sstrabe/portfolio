@@ -45,35 +45,61 @@ mod web {
         stars: u32,
         seed: u32,
     ) -> Result<Engine, JsValue> {
-        console_error_panic_hook::set_once();
-        let defaults = WorldConfig::default();
-        let cfg = WorldConfig {
-            stations: default_stations(station_count.clamp(1, gpu::ATLAS_COLS * gpu::ATLAS_ROWS) as usize),
-            cluster: ClusterConfig {
-                stars: stars as usize,
-                seed: seed as u64 ^ 0x5EED_CAFE,
-                ..defaults.cluster.clone()
-            },
-            ..defaults
-        };
-        let world = World::new(cfg);
-        let n = world.cluster.len() as u32;
-        let cap = world.cluster.history.capacity() as u32;
-        let gpu = Gpu::new(canvas, n, cap).await.map_err(|e| JsValue::from_str(&e))?;
-        let mut engine = Engine {
-            generations: world.cluster.bodies.iter().map(|b| b.generation).collect(),
-            stations: vec![0.0; world.station_count() * STATION_STRIDE],
-            world,
-            gpu,
-            wall_time: 0.0,
-            fov_deg: 75.0,
-            exposure: 1.0,
-            highlight: -1,
-            uploaded_newest: f64::NEG_INFINITY,
-            events: Vec::new(),
-        };
-        engine.upload_all_history();
-        Ok(engine)
+        Engine::build(Some(canvas), (0, 0), station_count, stars, seed).await
+    }
+
+    /// An engine that renders offscreen at `width` × `height` and exposes its
+    /// frames through [`Engine::capture`], for automated visual checks in
+    /// environments that cannot present WebGPU canvases.
+    #[wasm_bindgen(js_name = createHeadlessEngine)]
+    pub async fn create_headless_engine(
+        width: u32,
+        height: u32,
+        station_count: u32,
+        stars: u32,
+        seed: u32,
+    ) -> Result<Engine, JsValue> {
+        Engine::build(None, (width, height), station_count, stars, seed).await
+    }
+
+    impl Engine {
+        async fn build(
+            canvas: Option<web_sys::HtmlCanvasElement>,
+            size: (u32, u32),
+            station_count: u32,
+            stars: u32,
+            seed: u32,
+        ) -> Result<Engine, JsValue> {
+            console_error_panic_hook::set_once();
+            let defaults = WorldConfig::default();
+            let cfg = WorldConfig {
+                stations: default_stations(station_count.clamp(1, gpu::ATLAS_COLS * gpu::ATLAS_ROWS) as usize),
+                cluster: ClusterConfig {
+                    stars: stars as usize,
+                    seed: seed as u64 ^ 0x5EED_CAFE,
+                    ..defaults.cluster.clone()
+                },
+                ..defaults
+            };
+            let world = World::new(cfg);
+            let n = world.cluster.len() as u32;
+            let cap = world.cluster.history.capacity() as u32;
+            let gpu = Gpu::new(canvas, size, n, cap).await.map_err(|e| JsValue::from_str(&e))?;
+            let mut engine = Engine {
+                generations: world.cluster.bodies.iter().map(|b| b.generation).collect(),
+                stations: vec![0.0; world.station_count() * STATION_STRIDE],
+                world,
+                gpu,
+                wall_time: 0.0,
+                fov_deg: 75.0,
+                exposure: 1.0,
+                highlight: -1,
+                uploaded_newest: f64::NEG_INFINITY,
+                events: Vec::new(),
+            };
+            engine.upload_all_history();
+            Ok(engine)
+        }
     }
 
     #[wasm_bindgen]
@@ -180,6 +206,18 @@ mod web {
                 t.spin,
                 t.alive_bodies as f64,
             ]
+        }
+
+        /// Headless engines: request the next frame's pixels.
+        #[wasm_bindgen(js_name = requestCapture)]
+        pub fn request_capture(&self) {
+            self.gpu.request_capture();
+        }
+
+        /// Headless engines: `[width u32 LE, height u32 LE, ...RGBA8]` once a
+        /// requested capture is ready.
+        pub fn capture(&self) -> Option<Vec<u8>> {
+            self.gpu.take_capture()
         }
 
         /// Events since the last frame as (code, argument) pairs: 1 horizon
