@@ -123,8 +123,22 @@ Controls:
 - Click to steer with the mouse. Right looks right, down looks down; `I`
   inverts up/down, and `Esc` releases the mouse.
 - `W`/`S`, `A`/`D`, `Space`/`C` thrust; arrow keys turn; `Q`/`E` roll.
-- `Shift` boosts, and `X` brakes to the local rest frame.
+- `Shift` boosts, and `X` brakes to the local rest frame (the planet or star
+  whose gravity dominates, else the hole's frame).
+- `[` / `]` or the mouse wheel scale the throttle by 10. Full throttle is
+  17,000 g; near a planet the throttle resets to the power of ten just above
+  its surface gravity, and back to full away from it.
+- `O` flies to the targeted (else nearest) planet and into a circular orbit
+  above its atmosphere, warping time on the way. `O` again or any thrust
+  takes over. `Tab` targets the next planet of the system.
+- `,` / `.` halve or double the time warp. Near a body it is capped so an
+  orbit takes at least 5 s.
 - `F11` toggles fullscreen and `Ctrl+Q` quits.
+
+Stars and planets pull on the ship (Newtonian gravity on top of the Kerr
+geodesic). Flying into a planet lands you on it; thrust lifts off. Flying
+into a star puts you back outside it. `--start planet` begins in a 420 km
+orbit around an Earth-like world, heading into the sunrise.
 
 Telemetry is in the window title. The ray-tracing resolution adapts between
 50% and 100% unless you pass `--scale`. Set `WGPU_BACKEND=vulkan|metal|dx12`

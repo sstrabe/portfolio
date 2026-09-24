@@ -19,6 +19,34 @@ use crate::vec3::{self, V3, V4};
 
 pub type Tetrad = [V4; 4];
 
+/// Most substeps a single step may take.
+const MAX_SUBSTEPS: usize = 2000;
+
+/// A weak external field acting on the ship on top of the Kerr geometry
+/// (the gravity of a nearby star system), plus the solid bodies in it.
+pub trait Field {
+    /// 4-acceleration (contravariant, orthogonal to `u`) at event `x` for
+    /// a ship with 4-velocity `u`.
+    fn accel(&self, k: &Kerr, x: V4, u: V4) -> V4;
+    /// Longest proper-time substep that resolves the field at `x`.
+    fn max_substep(&self, k: &Kerr, x: V4, u: V4) -> f64;
+    /// Whether the straight path from event `x0` to event `x1` enters a
+    /// solid body.
+    fn hit(&self, x0: V4, x1: V4) -> bool;
+}
+
+/// How [`Pilot::step_in`] ended.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Stepped {
+    Done,
+    /// The substep from event `from` to `to` entered a body; the pilot was
+    /// left at `from`.
+    Hit {
+        from: V4,
+        to: V4,
+    },
+}
+
 pub const FORWARD: usize = 1;
 pub const LEFT: usize = 2;
 pub const UP: usize = 3;
@@ -97,16 +125,56 @@ impl Pilot {
         // coordinates) and the thrust (rapidity change ≲ 0.5 per substep).
         // Needlessly small steps are harmful at high γ: renormalizing u
         // cancels terms of order γ², so rounding error accumulates per step.
-        let h_max = (0.03 * r.max(1.0) / self.e[0][0].max(1.0)).min(0.5 / (1.0 + 0.5 * accel));
-        let n = (dtau.abs() / h_max).ceil().clamp(1.0, 2000.0) as usize;
+        let h_max = self.base_substep(r, accel);
+        let n = (dtau.abs() / h_max).ceil().clamp(1.0, MAX_SUBSTEPS as f64) as usize;
         let h = dtau / n as f64;
         for _ in 0..n {
-            self.substep(k, cmd, h);
+            self.substep(k, cmd, h, None);
         }
         self.tau += dtau;
     }
 
-    fn substep(&mut self, k: &Kerr, cmd: &Command, h: f64) {
+    /// Like [`Pilot::step`], with an external field acting on the ship on
+    /// top of the Kerr geometry. Substeps adapt to the field as the ship
+    /// moves. Stops early, before the substep that would enter a solid
+    /// body, and reports it; the pilot is then left just outside.
+    pub fn step_in(&mut self, k: &Kerr, cmd: &Command, dtau: f64, field: &dyn Field) -> Stepped {
+        let thrust = vec3::norm(cmd.accel);
+        let mut left = dtau;
+        let mut count = 0;
+        while left > 0.0 {
+            let t = k.terms(self.position());
+            let f = field.accel(k, self.x, self.e[0]);
+            let f_mag = t.dot(f, f).max(0.0).sqrt();
+            let budget = MAX_SUBSTEPS.saturating_sub(count).max(1) as f64;
+            let h = self
+                .base_substep(t.r, thrust + f_mag)
+                .min(field.max_substep(k, self.x, self.e[0]))
+                .max(left / budget)
+                .min(left);
+            let (x0, e0) = (self.x, self.e);
+            self.substep(k, cmd, h, Some(field));
+            count += 1;
+            if field.hit(x0, self.x) {
+                let to = self.x;
+                self.x = x0;
+                self.e = e0;
+                self.tau += dtau - left;
+                return Stepped::Hit { from: x0, to };
+            }
+            left -= h;
+        }
+        self.tau += dtau;
+        Stepped::Done
+    }
+
+    /// Longest substep that resolves the curvature at radius `r` and a
+    /// proper acceleration `accel`.
+    fn base_substep(&self, r: f64, accel: f64) -> f64 {
+        (0.03 * r.max(1.0) / self.e[0][0].max(1.0)).min(0.5 / (1.0 + 0.5 * accel))
+    }
+
+    fn substep(&mut self, k: &Kerr, cmd: &Command, h: f64, field: Option<&dyn Field>) {
         let mut y = [0.0; 20];
         y[..4].copy_from_slice(&self.x);
         for a in 0..4 {
@@ -117,12 +185,23 @@ impl Pilot {
             let pos = [y[1], y[2], y[3]];
             let gam = k.christoffel(pos);
             let u = [y[4], y[5], y[6], y[7]];
+            let e: [V4; 3] = std::array::from_fn(|i| [y[8 + 4 * i], y[9 + 4 * i], y[10 + 4 * i], y[11 + 4 * i]]);
             let mut out = [0.0; 20];
             out[..4].copy_from_slice(&u);
+            // Total 4-acceleration: thrust along the ship's axes plus the
+            // field; its projections on the axes drive Fermi–Walker transport.
             let mut a4 = [0.0; 4];
+            let mut a_e = acc;
+            if let Some(field) = field {
+                a4 = field.accel(k, [y[0], y[1], y[2], y[3]], u);
+                let t = k.terms(pos);
+                for i in 0..3 {
+                    a_e[i] += t.dot(a4, e[i]);
+                }
+            }
             for i in 0..3 {
                 for mu in 0..4 {
-                    a4[mu] += acc[i] * y[8 + 4 * i + mu];
+                    a4[mu] += acc[i] * e[i][mu];
                 }
             }
             let du = transport(&gam, u, u);
@@ -130,10 +209,9 @@ impl Pilot {
                 out[4 + mu] = du[mu] + a4[mu];
             }
             for i in 0..3 {
-                let e = [y[8 + 4 * i], y[9 + 4 * i], y[10 + 4 * i], y[11 + 4 * i]];
-                let de = transport(&gam, u, e);
+                let de = transport(&gam, u, e[i]);
                 for mu in 0..4 {
-                    out[8 + 4 * i + mu] = de[mu] + acc[i] * u[mu];
+                    out[8 + 4 * i + mu] = de[mu] + a_e[i] * u[mu];
                 }
             }
             out

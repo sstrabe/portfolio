@@ -1,6 +1,7 @@
 //! The windowed app (winit).
 
 use crate::Options;
+use crate::hud;
 use crate::input::{Action, Controls};
 use kerr::units::{AU, SECONDS_PER_M};
 use kerr::vec3;
@@ -8,7 +9,7 @@ use render_hq::{Gpu, Session};
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
@@ -96,8 +97,9 @@ impl State {
         self.last = now;
         let input = self.controls.sample(dt);
         self.session.frame(dt, &input);
-        if self.session.events().iter().any(|e| matches!(e, kerr::world::WorldEvent::HorizonCrossed)) {
-            self.notify("you crossed the event horizon: respawned");
+        let world = &self.session.world;
+        if let Some(note) = self.session.events().iter().rev().find_map(|e| hud::note(world, e)) {
+            self.notify(note);
         }
 
         self.avg_ms = self.avg_ms * 0.95 + dt * 1000.0 * 0.05;
@@ -126,17 +128,24 @@ impl State {
             .filter(|b| b.alive)
             .map(|b| vec3::norm(vec3::sub(b.position(), pos)))
             .fold(f64::INFINITY, f64::min);
-        let warp = w.cfg.time_scale * SECONDS_PER_M;
+        let capped = if t.warp >= 0.99 * t.warp_limit { " (max here)" } else { "" };
         let mut s = format!(
-            "τ {} · universe {} · ×{:.0} warp · {} · r {} · nearest star {} · {:.0} fps",
+            "τ {} · universe {} · ×{:.0} warp{capped} · {} · {} · r {} · nearest star {} · {:.0} fps",
             duration(t.tau),
             duration(t.t),
-            warp,
+            t.warp,
             speed(t.speed, t.gamma),
+            hud::throttle(&t),
             distance(t.r),
             distance(nearest),
             1000.0 / self.avg_ms,
         );
+        if let Some(p) = &t.planet {
+            s = format!("{} · {s}", hud::planet(w, p));
+        }
+        if let Some(phase) = t.autopilot {
+            s = format!("AUTOPILOT: {phase} · {s}");
+        }
         let wall_to_impact = t.impact_in / (w.cfg.time_scale * t.clock_rate.max(1e-6));
         if wall_to_impact < 60.0 {
             s = format!("⚠ HEADING INTO THE HOLE: {wall_to_impact:.0} s (X brakes) · {s}");
@@ -219,11 +228,38 @@ impl ApplicationHandler for App {
                         }
                     }
                     Some(Action::Warp(f)) => {
-                        let ts = &mut s.session.world.cfg.time_scale;
+                        let world = &mut s.session.world;
                         let real = 1.0 / SECONDS_PER_M;
-                        *ts = (*ts * f).clamp(real, 1e7 * real);
-                        let warp = *ts * SECONDS_PER_M;
-                        s.notify(format!("time warp ×{warp:.0}"));
+                        let limit = world.warp_limit();
+                        let wanted = (world.cfg.time_scale * f).clamp(real, 1e7 * real);
+                        world.cfg.time_scale = wanted.min(limit);
+                        let warp = world.cfg.time_scale * SECONDS_PER_M;
+                        let capped = if wanted > limit { " (the most allowed this close)" } else { "" };
+                        s.notify(format!("time warp ×{warp:.0}{capped}"));
+                    }
+                    Some(Action::Throttle(f)) => {
+                        let world = &mut s.session.world;
+                        world.scale_throttle(f);
+                        let t = world.telemetry();
+                        s.notify(hud::throttle(&t));
+                    }
+                    Some(Action::OrbitAutopilot) => {
+                        let world = &mut s.session.world;
+                        let was_on = matches!(world.status, kerr::world::PilotStatus::Orbit(_));
+                        let note = match world.toggle_orbit_autopilot() {
+                            Some(p) => format!("autopilot: into orbit around {}", hud::planet_name(world, p)),
+                            None if was_on => "autopilot off".into(),
+                            None => "no planet within 2000 AU".into(),
+                        };
+                        s.notify(note);
+                    }
+                    Some(Action::NextTarget) => {
+                        let world = &mut s.session.world;
+                        let note = match world.cycle_target() {
+                            Some(p) => format!("target: {}", hud::planet_name(world, p)),
+                            None => "no planet within 2000 AU".into(),
+                        };
+                        s.notify(note);
                     }
                     Some(Action::InvertY(on)) => s.notify(if on { "mouse Y inverted" } else { "mouse Y normal" }),
                     None => {}
@@ -232,6 +268,17 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { button: MouseButton::Left, state: ElementState::Pressed, .. } => {
                 if !s.controls.captured {
                     s.capture_mouse(true);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let notches = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y as f64,
+                    MouseScrollDelta::PixelDelta(p) => p.y / 60.0,
+                };
+                if let Some(Action::Throttle(f)) = s.controls.wheel(notches) {
+                    s.session.world.scale_throttle(f);
+                    let t = s.session.world.telemetry();
+                    s.notify(hud::throttle(&t));
                 }
             }
             WindowEvent::RedrawRequested => s.redraw(self.options.scale.is_none()),
