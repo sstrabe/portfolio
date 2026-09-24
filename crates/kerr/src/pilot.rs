@@ -93,8 +93,11 @@ impl Pilot {
     pub fn step(&mut self, k: &Kerr, cmd: &Command, dtau: f64) {
         let r = k.radius(self.position());
         let accel = vec3::norm(cmd.accel);
-        // Resolve both the orbital and the ship's own coordinate motion.
-        let h_max = (0.03 * r.max(1.0)).min(0.5 / (1.0 + 0.5 * accel)) / self.e[0][0].max(1.0);
+        // Resolve the curvature scale (move at most ~3% of r per substep in
+        // coordinates) and the thrust (rapidity change ≲ 0.5 per substep).
+        // Needlessly small steps are harmful at high γ: renormalizing u
+        // cancels terms of order γ², so rounding error accumulates per step.
+        let h_max = (0.03 * r.max(1.0) / self.e[0][0].max(1.0)).min(0.5 / (1.0 + 0.5 * accel));
         let n = (dtau.abs() / h_max).ceil().clamp(1.0, 2000.0) as usize;
         let h = dtau / n as f64;
         for _ in 0..n {
@@ -324,6 +327,24 @@ mod tests {
         let g2 = pilot.normal_gamma(&k);
         assert!(g2 > g && g2.is_finite());
         check_orthonormal(&k, &pilot);
+    }
+
+    #[test]
+    fn coasting_at_extreme_speed_conserves_energy() {
+        let k = Kerr::new(1.0, 0.9);
+        let mut p = Pilot::new(&k, [5e6, 1e5, 3e5], [0.0; 3], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]).unwrap();
+        // Burn to γ ≈ 4 × 10⁴, then coast for a few hundred frames.
+        let burn = Command { accel: [0.06, 0.0, 0.0], spin: [0.0; 3] };
+        for _ in 0..376 {
+            p.step(&k, &burn, 0.5);
+        }
+        let e0 = -k.lower(p.position(), p.e[0])[0];
+        assert!(e0 > 1e4, "E = {e0}");
+        for _ in 0..600 {
+            p.step(&k, &Command::default(), 0.78);
+        }
+        let e = -k.lower(p.position(), p.e[0])[0];
+        assert!((e / e0 - 1.0).abs() < 1e-4, "energy drifted by {}", e / e0 - 1.0);
     }
 
     #[test]

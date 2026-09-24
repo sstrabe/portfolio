@@ -51,6 +51,11 @@ pub struct WorldConfig {
     pub dock_view_yaw: f64,
     pub autopilot_cruise: f64,
     pub start_station: usize,
+    /// Without stations: radius of the circular orbit the ship starts on.
+    pub start_radius: f64,
+    /// Rendering: point-source flux (L☉/M² for physical stars) that maps to
+    /// the faintest visible star.
+    pub star_flux_ref: f64,
 }
 
 impl Default for WorldConfig {
@@ -70,6 +75,57 @@ impl Default for WorldConfig {
             dock_view_yaw: 0.32,
             autopilot_cruise: 0.45,
             start_station: 0,
+            start_radius: 60.0,
+            // Tuned so the stylized cluster's stars look as they always have.
+            star_flux_ref: 2.5e-5,
+        }
+    }
+}
+
+impl WorldConfig {
+    /// Sagittarius A* at its real scale: 4.3 million solar masses, real
+    /// stars (Salpeter masses, main-sequence and giant radii and
+    /// luminosities) from ~100 AU out to ~0.1 pc, stellar-mass black holes
+    /// that barely inspiral, and no stations. From most places the hole is
+    /// smaller than a pixel; you see it by what it does to the light behind
+    /// it, or by flying in.
+    pub fn sgr_a(stars: usize, seed: u64) -> Self {
+        use crate::units::{AU, MSUN, SECONDS_PER_M, flux_of_magnitude};
+        Self {
+            spin: 0.9,
+            cluster: ClusterConfig {
+                seed,
+                stars,
+                compact_objects: 8,
+                r_min: 100.0 * AU,
+                r_max: 20_000.0 * AU,
+                cusp_gamma: 1.75,
+                star_mass: (0.5 * MSUN, 40.0 * MSUN),
+                star_model: crate::cluster::StarModel::Physical { mass_msun: (0.5, 40.0), giant_fraction: 0.08 },
+                compact_mass: (5.0 * MSUN, 30.0 * MSUN),
+                compact_radius: (150.0 * AU, 1500.0 * AU),
+                history_dt: 2000.0,
+                history_len: 512,
+                softening: 2.0 * AU,
+                source_mass_min: 15.0 * MSUN,
+                max_sources: 16,
+                // Pulls between real stars change on orbital timescales of
+                // ~10⁵ M or more; refreshing every ~3×10⁴ M is plenty.
+                perturbation_every: 16,
+                radiation_reaction: true,
+                escape_radius: 200_000.0 * AU,
+            },
+            stations: Vec::new(),
+            // 1000× real time: a year of ship time is ~9 hours of wall time.
+            time_scale: 1000.0 / SECONDS_PER_M,
+            max_dt_per_frame: 40_000.0,
+            thrust: 0.012,
+            boost_factor: 5.0,
+            start_radius: 800.0 * AU,
+            // Faintest visible: apparent magnitude 7, a little past what the
+            // eye sees on Earth.
+            star_flux_ref: flux_of_magnitude(7.0),
+            ..Self::default()
         }
     }
 }
@@ -193,6 +249,7 @@ impl World {
                     mass: 0.0,
                     temperature: STATION_TEMPERATURE,
                     luminosity: 1.0,
+                    radius: 0.0,
                     feels_perturbations: false,
                     radiates: false,
                 },
@@ -200,7 +257,7 @@ impl World {
             .collect();
         let cluster = Cluster::new(kerr, cfg.cluster.clone(), &placements);
         let n = cfg.stations.len();
-        let pilot = start_pilot(&kerr, &cluster, cfg.start_station.min(n.saturating_sub(1)), n);
+        let pilot = start_pilot(&kerr, &cluster, cfg.start_station.min(n.saturating_sub(1)), n, cfg.start_radius);
         Self {
             kerr,
             cluster,
@@ -311,12 +368,19 @@ impl World {
         let n = self.station_count();
         let s = self.cfg.start_station.min(n.saturating_sub(1));
         let t = self.cluster.t;
-        let mut p = start_pilot(&self.kerr, &self.cluster, s, n);
+        let mut p = start_pilot(&self.kerr, &self.cluster, s, n, self.cfg.start_radius);
         p.x[0] = t;
         p.tau = self.pilot.tau;
         self.pilot = p;
         self.status = PilotStatus::Free;
         self.guesses.iter_mut().for_each(|g| *g = None);
+    }
+
+    /// 4-velocity of the observer at rest in the t = const slicing.
+    fn normal_observer(&self) -> [f64; 4] {
+        let t = self.kerr.terms(self.pilot.position());
+        let alpha = 1.0 / (1.0 + t.f).sqrt();
+        [alpha * (1.0 + t.f), -alpha * t.f * t.l[0], -alpha * t.f * t.l[1], -alpha * t.f * t.l[2]]
     }
 
     fn nearest_station(&self) -> Option<(usize, f64)> {
@@ -344,10 +408,19 @@ impl World {
         let mut spin = vec3::scale(input.turn, self.cfg.turn_rate * per_tau);
         let mut accel = vec3::scale(input.thrust, a_max);
 
-        let brake_target = if input.brake { self.nearest_station().map(|(i, _)| i) } else { None };
-        if let Some(i) = brake_target {
-            let (_, v) = self.relative(i);
-            accel = clamp_len(vec3::scale(v, -0.5), a_max.max(self.cfg.thrust * self.cfg.boost_factor));
+        if input.brake {
+            // Null the velocity relative to the nearest station, or without
+            // stations relative to the local rest frame (the normal
+            // observer of the t = const slicing).
+            let v = match self.nearest_station() {
+                Some((i, _)) => self.relative(i).1,
+                None => vec3::scale(self.pilot.relative_velocity(&self.kerr, self.normal_observer()), -1.0),
+            };
+            // Brake over a few proper-time units, without exceeding boost thrust.
+            let rapidity = vec3::norm(v).min(0.999_999_999).atanh();
+            let dir = vec3::scale(v, -1.0 / vec3::norm(v).max(1e-300));
+            let a_brake = self.cfg.thrust * self.cfg.boost_factor;
+            accel = vec3::scale(dir, (rapidity * 0.5).min(a_brake));
         }
 
         if let PilotStatus::Autopilot(i) = self.status {
@@ -523,10 +596,12 @@ fn coord_to_local(obs: &Observer, k: &Kerr, v: V3) -> V3 {
 
 /// Park the ship a short way outside station `s`, co-moving with it and
 /// looking past it towards the hole.
-fn start_pilot(k: &Kerr, cluster: &Cluster, s: usize, n_stations: usize) -> Pilot {
+fn start_pilot(k: &Kerr, cluster: &Cluster, s: usize, n_stations: usize, radius: f64) -> Pilot {
     if n_stations == 0 {
-        return Pilot::new(k, [60.0, 0.0, 6.0], [0.0, 0.13, 0.0], [-1.0, 0.0, -0.1], [0.0, 0.0, 1.0])
-            .expect("valid start");
+        // A circular orbit slightly above the equator, facing the hole.
+        let pos = [radius, 0.0, 0.1 * radius];
+        let v = (k.m / vec3::norm(pos)).sqrt();
+        return Pilot::new(k, pos, [0.0, v, 0.0], [-1.0, 0.0, -0.1], [0.0, 0.0, 1.0]).expect("valid start");
     }
     let st = &cluster.bodies[s];
     let sp = st.position();

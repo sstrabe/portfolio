@@ -31,6 +31,7 @@
 //! * [`lensing`]: backward null-geodesic tracing and image finding on the
 //!   observer's past light cone.
 //! * [`world`]: ties it together behind a per-frame API.
+//! * [`units`]: conversions for a hole of Sagittarius A*'s mass.
 
 // Index loops mirror the tensor notation in the docs and the WGSL ports.
 #![allow(clippy::needless_range_loop)]
@@ -45,6 +46,7 @@ pub mod metric;
 pub mod orbit;
 pub mod pilot;
 pub mod rng;
+pub mod units;
 pub mod vec3;
 pub mod world;
 

@@ -20,6 +20,7 @@ use crate::integrate::{Dopri5, Outcome, Tolerance};
 use crate::metric::Kerr;
 use crate::orbit::{self, Launch};
 use crate::rng::Rng;
+use crate::units;
 use crate::vec3::{self, V3};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,8 +37,11 @@ pub struct BodyParams {
     pub mass: f64,
     /// Photospheric temperature in kelvin (rendering).
     pub temperature: f64,
-    /// Relative luminosity (rendering).
+    /// Luminosity (rendering): in solar luminosities for physical stars,
+    /// arbitrary for the stylized cluster.
     pub luminosity: f64,
+    /// Radius in units of `M` (0: a point, never resolved on screen).
+    pub radius: f64,
     pub feels_perturbations: bool,
     pub radiates: bool,
 }
@@ -79,6 +83,9 @@ pub struct ClusterConfig {
     pub cusp_gamma: f64,
     /// Star masses are log-uniform in this range (units of M).
     pub star_mass: (f64, f64),
+    /// How stars are made: stylized (exaggerated masses, arbitrary
+    /// brightness, point-like) or physical.
+    pub star_model: StarModel,
     pub compact_mass: (f64, f64),
     pub compact_radius: (f64, f64),
     pub history_dt: f64,
@@ -89,8 +96,20 @@ pub struct ClusterConfig {
     pub source_mass_min: f64,
     /// At most this many (the most massive) sources are used.
     pub max_sources: usize,
+    /// Refresh the weak-field pulls every this many history ticks.
+    pub perturbation_every: usize,
     pub radiation_reaction: bool,
     pub escape_radius: f64,
+}
+
+/// How cluster stars are populated.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StarModel {
+    /// Exaggerated masses so mutual pulls are visible; point sources.
+    Stylized,
+    /// Real stars: masses from a Salpeter mass function in `mass_msun`,
+    /// main-sequence radii and luminosities, with a share of red giants.
+    Physical { mass_msun: (f64, f64), giant_fraction: f64 },
 }
 
 impl Default for ClusterConfig {
@@ -103,6 +122,7 @@ impl Default for ClusterConfig {
             r_max: 260.0,
             cusp_gamma: 1.75,
             star_mass: (2e-6, 2e-4),
+            star_model: StarModel::Stylized,
             compact_mass: (4e-3, 1.5e-2),
             compact_radius: (9.0, 16.0),
             history_dt: 2.5,
@@ -110,6 +130,7 @@ impl Default for ClusterConfig {
             softening: 0.6,
             source_mass_min: 2e-5,
             max_sources: 64,
+            perturbation_every: 1,
             radiation_reaction: true,
             escape_radius: 900.0,
         }
@@ -141,13 +162,15 @@ pub struct Cluster {
     rng: Rng,
     stepper: Dopri5,
     sources: Vec<usize>,
+    ticks: usize,
 }
 
 impl Cluster {
     pub fn new(kerr: Kerr, cfg: ClusterConfig, placements: &[Placement]) -> Self {
         let mut rng = Rng::new(cfg.seed);
         let n = placements.len() + cfg.compact_objects + cfg.stars;
-        let stepper = Dopri5 { tol: Tolerance { abs: 1e-9, rel: 1e-9 }, h_min: 1e-7, h_max: 40.0, max_steps: 50_000 };
+        // Tolerance, not a cap, sets the step: far-out orbits take huge steps.
+        let stepper = Dopri5 { tol: Tolerance { abs: 1e-9, rel: 1e-9 }, h_min: 1e-7, h_max: 1e12, max_steps: 50_000 };
         let mut bodies = Vec::with_capacity(n);
         for p in placements {
             bodies.push(make_body(&kerr, p.launch, p.params));
@@ -161,7 +184,18 @@ impl Cluster {
             bodies.push(make_body(&kerr, launch, params));
         }
         let history = HistoryRing::new(n, cfg.history_len, cfg.history_dt);
-        let mut c = Self { kerr, cfg, bodies, t: 0.0, history, events: Vec::new(), rng, stepper, sources: Vec::new() };
+        let mut c = Self {
+            kerr,
+            cfg,
+            bodies,
+            t: 0.0,
+            history,
+            events: Vec::new(),
+            rng,
+            stepper,
+            sources: Vec::new(),
+            ticks: 0,
+        };
         c.fill_initial_history();
         c.refresh_sources();
         c.update_perturbations();
@@ -305,7 +339,10 @@ impl Cluster {
                 let snapshot: Vec<Sample> = (0..self.bodies.len()).map(|i| self.current_sample(i)).collect();
                 self.history.push(t_tick, |b| snapshot[b]);
                 self.recycle();
-                self.update_perturbations();
+                self.ticks += 1;
+                if self.ticks % self.cfg.perturbation_every.max(1) == 0 {
+                    self.update_perturbations();
+                }
             }
         }
     }
@@ -409,14 +446,52 @@ fn log_uniform(rng: &mut Rng, (lo, hi): (f64, f64)) -> f64 {
 
 fn random_star(k: &Kerr, cfg: &ClusterConfig, rng: &mut Rng) -> (Launch, BodyParams) {
     let launch = orbit::random_cluster_orbit(k, rng, cfg.r_min, cfg.r_max, cfg.cusp_gamma, cfg.r_min * 0.8);
-    let mass = log_uniform(rng, cfg.star_mass);
-    // Heavier stars run hotter and brighter (loosely main-sequence-like).
-    let x = (mass.ln() - cfg.star_mass.0.ln()) / (cfg.star_mass.1.ln() - cfg.star_mass.0.ln());
-    let temperature = 2800.0 * (14.0f64).powf(x * (0.7 + 0.3 * rng.uniform()));
-    let luminosity = 0.25 + 3.0 * x * x + 0.3 * rng.uniform();
-    let params =
-        BodyParams { kind: BodyKind::Star, mass, temperature, luminosity, feels_perturbations: true, radiates: false };
+    let (mass, temperature, luminosity, radius) = match cfg.star_model {
+        StarModel::Stylized => {
+            let mass = log_uniform(rng, cfg.star_mass);
+            // Heavier stars run hotter and brighter (loosely main-sequence-like).
+            let x = (mass.ln() - cfg.star_mass.0.ln()) / (cfg.star_mass.1.ln() - cfg.star_mass.0.ln());
+            let temperature = 2800.0 * (14.0f64).powf(x * (0.7 + 0.3 * rng.uniform()));
+            (mass, temperature, 0.25 + 3.0 * x * x + 0.3 * rng.uniform(), 0.0)
+        }
+        StarModel::Physical { mass_msun, giant_fraction } => physical_star(rng, mass_msun, giant_fraction),
+    };
+    let params = BodyParams {
+        kind: BodyKind::Star,
+        mass,
+        temperature,
+        luminosity,
+        radius,
+        feels_perturbations: true,
+        radiates: false,
+    };
     (launch, params)
+}
+
+/// A star drawn from a Salpeter mass function (dN/dm ∝ m^−2.35) with
+/// main-sequence mass–radius and mass–luminosity relations, or with
+/// probability `giant_fraction` a red giant. Returns (mass in M,
+/// temperature K, luminosity L☉, radius in M).
+fn physical_star(rng: &mut Rng, (lo, hi): (f64, f64), giant_fraction: f64) -> (f64, f64, f64, f64) {
+    let e = -1.35;
+    let m = (lo.powf(e) + rng.uniform() * (hi.powf(e) - lo.powf(e))).powf(1.0 / e);
+    let (radius_rsun, lum) = if rng.uniform() < giant_fraction {
+        let r = rng.range(10.0, 60.0);
+        let t: f64 = rng.range(3600.0, 4800.0);
+        (r, r * r * (t / 5772.0).powi(4))
+    } else {
+        let r = if m < 1.0 { m.powf(0.8) } else { m.powf(0.57) };
+        let l = if m < 0.43 {
+            0.23 * m.powf(2.3)
+        } else if m < 2.0 {
+            m.powi(4)
+        } else {
+            1.4 * m.powf(3.5)
+        };
+        (r, l)
+    };
+    let temperature = 5772.0 * (lum / (radius_rsun * radius_rsun)).powf(0.25);
+    (m * units::MSUN, temperature, lum, radius_rsun * units::RSUN)
 }
 
 fn random_compact(k: &Kerr, cfg: &ClusterConfig, rng: &mut Rng) -> (Launch, BodyParams) {
@@ -433,6 +508,7 @@ fn random_compact(k: &Kerr, cfg: &ClusterConfig, rng: &mut Rng) -> (Launch, Body
         mass: log_uniform(rng, cfg.compact_mass),
         temperature: 60_000.0,
         luminosity: 1.5,
+        radius: 0.0,
         feels_perturbations: true,
         radiates: true,
     };
@@ -472,6 +548,7 @@ mod tests {
                 mass: 0.0,
                 temperature: 6500.0,
                 luminosity: 1.0,
+                radius: 0.0,
                 feels_perturbations: false,
                 radiates: false,
             },
