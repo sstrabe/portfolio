@@ -137,6 +137,10 @@ impl State {
             distance(nearest),
             1000.0 / self.avg_ms,
         );
+        let wall_to_impact = t.impact_in / (w.cfg.time_scale * t.clock_rate.max(1e-6));
+        if wall_to_impact < 60.0 {
+            s = format!("⚠ HEADING INTO THE HOLE: {wall_to_impact:.0} s (X brakes) · {s}");
+        }
         if t.clock_rate < 0.98 {
             s += &format!(" · clock limited to {:.0}%", t.clock_rate * 100.0);
         }

@@ -219,6 +219,9 @@ pub struct Telemetry {
     pub r_plus: f64,
     pub spin: f64,
     pub alive_bodies: usize,
+    /// Proper time until the ship reaches the horizon if it coasts on its
+    /// current (straight-line) heading, or infinity when it would miss.
+    pub impact_in: f64,
 }
 
 pub struct World {
@@ -552,7 +555,27 @@ impl World {
             r_plus: self.kerr.r_plus(),
             spin: self.kerr.a,
             alive_bodies: self.cluster.bodies.iter().filter(|b| b.alive).count(),
+            impact_in: self.impact_in(),
         }
+    }
+
+    /// Straight-line estimate of the proper time left before the horizon.
+    /// Anything passing within a few M of the centre is treated as a hit
+    /// (photons are captured below an impact parameter of about 5 M).
+    fn impact_in(&self) -> f64 {
+        let u = self.pilot.e[0];
+        let pos = self.pilot.position();
+        let v = [u[1] / u[0], u[2] / u[0], u[3] / u[0]];
+        let speed = vec3::norm(v);
+        let along = -vec3::dot(pos, v) / speed.max(1e-12);
+        if along <= 0.0 {
+            return f64::INFINITY;
+        }
+        let miss = vec3::norm(vec3::add(pos, vec3::scale(v, along / speed)));
+        if miss > 6.0 * self.kerr.m {
+            return f64::INFINITY;
+        }
+        (along / speed) / self.pilot.time_dilation().max(1.0)
     }
 }
 
@@ -603,10 +626,13 @@ fn coord_to_local(obs: &Observer, k: &Kerr, v: V3) -> V3 {
 /// looking past it towards the hole.
 fn start_pilot(k: &Kerr, cluster: &Cluster, s: usize, n_stations: usize, radius: f64) -> Pilot {
     if n_stations == 0 {
-        // A circular orbit slightly above the equator, facing the hole.
+        // A circular orbit slightly above the equator, facing prograde with
+        // the hole off to the side: thrusting straight ahead at realistic
+        // scale would otherwise dive into it within seconds.
         let pos = [radius, 0.0, 0.1 * radius];
         let v = (k.m / vec3::norm(pos)).sqrt();
-        return Pilot::new(k, pos, [0.0, v, 0.0], [-1.0, 0.0, -0.1], [0.0, 0.0, 1.0]).expect("valid start");
+        let look = vec3::normalize([-0.35, 1.0, -0.05]);
+        return Pilot::new(k, pos, [0.0, v, 0.0], look, [0.0, 0.0, 1.0]).expect("valid start");
     }
     let st = &cluster.bodies[s];
     let sp = st.position();
@@ -632,6 +658,24 @@ mod tests {
             ..Default::default()
         };
         World::new(cfg)
+    }
+
+    #[test]
+    fn full_thrust_ahead_from_the_realistic_start_misses_the_hole() {
+        let mut w = World::new(WorldConfig::sgr_a(16, 1));
+        assert!(w.telemetry().impact_in.is_infinite());
+        let input = Input { thrust: [1.0, 0.0, 0.0], autopilot: -1, ..Default::default() };
+        for _ in 0..900 {
+            w.step(1.0 / 60.0, &input);
+            assert!(!w.events.contains(&WorldEvent::HorizonCrossed));
+        }
+        assert!(w.telemetry().gamma > 50.0);
+        // Pointing straight at the hole is flagged.
+        let mut dive = World::new(WorldConfig::sgr_a(16, 1));
+        let inward = vec3::scale(vec3::normalize(dive.pilot.position()), -0.5);
+        let p = Pilot::new(&dive.kerr, dive.pilot.position(), inward, inward, [0.0, 0.0, 1.0]).unwrap();
+        dive.pilot = p;
+        assert!(dive.telemetry().impact_in.is_finite());
     }
 
     #[test]
