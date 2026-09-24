@@ -70,6 +70,13 @@ pub fn gm_to_m(gm_km: f64) -> f64 {
     gm_km * SECONDS_PER_M * SECONDS_PER_M / (KM_PER_M * KM_PER_M * KM_PER_M)
 }
 
+/// Altitude of a planet's parking orbit, km: a quarter above the top of
+/// its atmosphere (125 km for an Earth-like one), or 7% of the radius for
+/// an airless world.
+pub fn parking_altitude_km(p: &Planet) -> f64 {
+    p.atmosphere.map_or(0.07 * p.radius_km, |a| 1.25 * a.top_km)
+}
+
 /// A planet of a particular star (slots are reused, hence the generation).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlanetRef {
@@ -499,5 +506,18 @@ mod tests {
         assert!((s - 0.25).abs() < 1e-12);
         assert_eq!(segment_enters_sphere([0.5, 0.0, 0.0], [3.0, 0.0, 0.0], 1.0), Some(0.0));
         assert_eq!(segment_enters_sphere([2.0, 2.0, 0.0], [-2.0, 2.0, 0.0], 1.0), None);
+    }
+
+    #[test]
+    fn extrapolated_star_follows_its_geodesic() {
+        use crate::world::{World, WorldConfig};
+        let mut w = World::new(WorldConfig::sgr_a(200, 1));
+        let star = (0..w.cluster.len()).find(|&i| is_star(&w.cluster, i)).unwrap();
+        let l = Local::new(&w.kerr, &w.cluster, star, w.cluster.bodies[star].position());
+        for (dt, tol_km) in [(10.0, 1e-3), (100.0, 1e-2), (1000.0, 5.0)] {
+            w.cluster.advance_to(l.t0 + dt);
+            let err = vec3::norm(vec3::sub(w.cluster.bodies[star].position(), l.star_state(l.t0 + dt).0)) * KM_PER_M;
+            assert!(err < tol_km, "after {dt} M the star is {err} km off");
+        }
     }
 }
