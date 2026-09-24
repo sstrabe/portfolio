@@ -43,9 +43,9 @@ export async function start(host: HTMLElement, fail: (reason: unknown) => void) 
     }
   });
 
-  if (!navigator.gpu) throw new Error("WebGPU is not available");
+  if (!navigator.gpu) throw unsupported("WebGPU is not available");
   const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) throw new Error("no WebGPU adapter");
+  if (!adapter) throw unsupported("no WebGPU adapter");
 
   const dpr = Math.min(devicePixelRatio || 1, 2);
   const sizeCanvas = () => {
@@ -186,6 +186,13 @@ export async function start(host: HTMLElement, fail: (reason: unknown) => void) 
     last = t;
     requestAnimationFrame(frame);
   });
+}
+
+/** An error meaning "this browser can't", as opposed to "something broke". */
+function unsupported(message: string): Error {
+  const e = new Error(message);
+  e.name = "Unsupported";
+  return e;
 }
 
 /** Headless engines: the next frame as a PNG data URL. */

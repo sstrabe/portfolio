@@ -13,7 +13,9 @@ document.getElementById("enter-immersive")?.addEventListener("click", () => {
 });
 
 function fallback(reason: unknown) {
-  console.error("Immersive mode failed:", reason);
+  const quiet = reason instanceof Error && reason.name === "Unsupported";
+  if (quiet) console.info("Immersive mode unavailable:", reason.message);
+  else console.error("Immersive mode failed:", reason);
   root.dataset.mode = "plain";
   const host = document.getElementById("immersive");
   if (host) {
@@ -21,7 +23,7 @@ function fallback(reason: unknown) {
     host.replaceChildren();
   }
   const plain = document.getElementById("plain");
-  if (plain && !document.getElementById("fallback-note")) {
+  if (plain && !quiet && !document.getElementById("fallback-note")) {
     const note = document.createElement("p");
     note.id = "fallback-note";
     note.className = "fallback-note";
