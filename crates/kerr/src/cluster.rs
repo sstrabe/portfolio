@@ -340,7 +340,7 @@ impl Cluster {
                 self.history.push(t_tick, |b| snapshot[b]);
                 self.recycle();
                 self.ticks += 1;
-                if self.ticks % self.cfg.perturbation_every.max(1) == 0 {
+                if self.ticks.is_multiple_of(self.cfg.perturbation_every.max(1)) {
                     self.update_perturbations();
                 }
             }
