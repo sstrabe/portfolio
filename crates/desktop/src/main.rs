@@ -9,6 +9,7 @@
 
 mod app;
 mod headless;
+mod hud;
 mod input;
 mod start;
 
@@ -25,6 +26,8 @@ pub struct Options {
     pub near_star: Option<f64>,
     /// Headless: thrust forward (with boost) for the whole flight.
     pub burn: bool,
+    /// Headless: engage the orbit autopilot on the nearest planet.
+    pub autopilot: bool,
     pub start: start::Start,
 }
 
@@ -39,20 +42,35 @@ OPTIONS:
     --fov DEG           Vertical field of view (default 75)
     --scale S           Fixed ray-tracing resolution scale 0.2–1 (default: adaptive)
     --start WHERE       cluster (default): orbiting 800 AU from the hole;
-                        planet: just above the nearest Earth-like world at dawn
+                        planet: in a 420 km orbit around the nearest Earth-like
+                        world, heading into the sunrise over its limb
     --headless WxH      Render offscreen and save a PNG instead of opening a window
     --seconds S         Headless: seconds of flight before the shot (default 2)
     --out FILE          Headless: output path (default kerr-nucleus.png)
     --near-star K       Headless: start K stellar radii from the nearest star
     --burn              Headless: thrust forward with boost during the flight
+    --autopilot         Headless: fly into orbit around the nearest planet
     -h, --help          Show this help
 
 CONTROLS:
     Click to steer with the mouse (Esc releases it), I inverts mouse Y.
     W/S thrust, A/D strafe, Space/C up/down, arrows turn, Q/E roll,
-    Shift boost (5x), X brake (to the local rest frame),
-    , / . halve / double the time warp, F11 fullscreen, Ctrl+Q quit.
+    Shift boost (5x), X brake (to the local rest frame: the planet or star
+    whose gravity dominates, else the hole's frame),
+    [ / ] or the mouse wheel: throttle down / up by 10x (the engine gives
+    17,000 g at full throttle; near a planet the throttle resets to a
+    power of ten above its surface gravity, and back to full away from it),
+    O orbit autopilot: fly to the targeted (else nearest) planet and into a
+    circular orbit above its atmosphere; O again or any thrust takes over,
+    Tab target the next planet of the system,
+    , / . halve / double the time warp (near a body it is capped so an
+    orbit takes at least 5 s), F11 fullscreen, Ctrl+Q quit.
     Telemetry is shown in the window title.
+
+PLANETS:
+    Stars and planets pull on the ship with Newtonian gravity added to the
+    Kerr geodesic. Flying into a planet lands you on it (thrust lifts off);
+    flying into a star puts you back outside it.
 
 SCALE:
     Real Sagittarius A*: 4.3 million solar masses, stars from ~100 AU out to
@@ -74,6 +92,7 @@ fn parse() -> Result<Options, String> {
         out: "kerr-nucleus.png".into(),
         near_star: None,
         burn: false,
+        autopilot: false,
         start: start::Start::Cluster,
     };
     let mut args = std::env::args().skip(1);
@@ -98,6 +117,7 @@ fn parse() -> Result<Options, String> {
                 o.near_star = Some(value("--near-star")?.parse().map_err(|e| format!("--near-star: {e}"))?)
             }
             "--burn" => o.burn = true,
+            "--autopilot" => o.autopilot = true,
             "--start" => o.start = value("--start")?.parse()?,
             other => return Err(format!("unknown option {other}\n\n{USAGE}")),
         }

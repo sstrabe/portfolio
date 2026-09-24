@@ -186,12 +186,15 @@ mod web {
             self.session
                 .events()
                 .iter()
-                .flat_map(|ev| match *ev {
-                    WorldEvent::HorizonCrossed => [1, -1],
-                    WorldEvent::Docked(i) => [2, i as i32],
-                    WorldEvent::Undocked(i) => [3, i as i32],
-                    WorldEvent::StarCaptured(i) => [4, i as i32],
+                .filter_map(|ev| match *ev {
+                    WorldEvent::HorizonCrossed => Some([1, -1]),
+                    WorldEvent::Docked(i) => Some([2, i as i32]),
+                    WorldEvent::Undocked(i) => Some([3, i as i32]),
+                    WorldEvent::StarCaptured(i) => Some([4, i as i32]),
+                    // Planet flight is desktop only.
+                    _ => None,
                 })
+                .flatten()
                 .collect()
         }
     }

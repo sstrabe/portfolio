@@ -1117,8 +1117,8 @@ impl World {
         let el = Elements::of(mu, r, v);
         if el.bound()
             && el.periapsis > floor
-            && el.apoapsis - el.periapsis < 0.002 * rc
-            && (el.semi_major - rc).abs() < 0.005 * rc
+            && el.apoapsis - el.periapsis < 0.0005 * rc
+            && (el.semi_major - rc).abs() < 0.001 * rc
         {
             self.status = PilotStatus::Free;
             self.events.push(WorldEvent::OrbitReached(p));
@@ -1531,7 +1531,7 @@ mod tests {
         let frame = reached.unwrap_or_else(|| panic!("no orbit after 60 s: {:?}", w.telemetry()));
         let t = w.telemetry().planet.unwrap();
         let want = local::parking_altitude_km(w.system_of(p).unwrap().planet(p.planet).unwrap());
-        assert!((t.periapsis_km / want - 1.0).abs() < 0.1 && (t.apoapsis_km / want - 1.0).abs() < 0.1, "{t:?}");
+        assert!((t.periapsis_km / want - 1.0).abs() < 0.03 && (t.apoapsis_km / want - 1.0).abs() < 0.03, "{t:?}");
         assert!(frame < 60 * 30, "took {} s", frame / 60);
         eprintln!("orbit from 1 AU after {:.1} s of wall time: {t:?}", frame as f64 / 60.0);
         // It stays up on its own.
@@ -1540,6 +1540,22 @@ mod tests {
         }
         let after = w.telemetry().planet.unwrap();
         assert!(w.status == PilotStatus::Free && (after.periapsis_km / want - 1.0).abs() < 0.1, "{after:?}");
+    }
+
+    #[test]
+    fn orbit_autopilot_crosses_the_cluster() {
+        let mut w = World::new(WorldConfig::sgr_a(400, 1));
+        let p = w.toggle_orbit_autopilot().expect("a planet in range");
+        // Hundreds of AU away: the transfer is relativistic (γ in the
+        // hundreds) and the warp is high until the approach.
+        let input = Input { autopilot: -1, ..Default::default() };
+        let mut max_gamma: f64 = 1.0;
+        let reached = (0..60 * 60).any(|_| {
+            w.step(1.0 / 60.0, &input);
+            max_gamma = max_gamma.max(w.telemetry().gamma);
+            w.events.contains(&WorldEvent::OrbitReached(p))
+        });
+        assert!(reached && max_gamma > 10.0, "max γ {max_gamma}: {:?}", w.telemetry());
     }
 
     #[test]

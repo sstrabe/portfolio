@@ -22,6 +22,12 @@ pub enum Action {
     /// Multiply the time warp by this factor.
     Warp(f64),
     InvertY(bool),
+    /// Multiply the throttle by this factor.
+    Throttle(f64),
+    /// Engage or release the orbit autopilot.
+    OrbitAutopilot,
+    /// Target the next planet.
+    NextTarget,
 }
 
 #[derive(Default)]
@@ -31,6 +37,7 @@ pub struct Controls {
     invert_y: bool,
     dx: f64,
     dy: f64,
+    wheel: f64,
 }
 
 impl Controls {
@@ -50,12 +57,25 @@ impl Controls {
             KeyCode::KeyQ if ctrl => Some(Action::Quit),
             KeyCode::Period | KeyCode::Equal | KeyCode::NumpadAdd => Some(Action::Warp(2.0)),
             KeyCode::Comma | KeyCode::Minus | KeyCode::NumpadSubtract => Some(Action::Warp(0.5)),
+            KeyCode::BracketRight => Some(Action::Throttle(10.0)),
+            KeyCode::BracketLeft => Some(Action::Throttle(0.1)),
+            KeyCode::KeyO => Some(Action::OrbitAutopilot),
+            KeyCode::Tab => Some(Action::NextTarget),
             KeyCode::KeyI => {
                 self.invert_y = !self.invert_y;
                 Some(Action::InvertY(self.invert_y))
             }
             _ => None,
         }
+    }
+
+    /// Mouse wheel: one notch (or 60 px of touchpad scrolling) is a factor
+    /// of 10 on the throttle.
+    pub fn wheel(&mut self, notches: f64) -> Option<Action> {
+        self.wheel += notches;
+        let steps = self.wheel.trunc();
+        self.wheel -= steps;
+        (steps != 0.0).then(|| Action::Throttle(10f64.powf(steps)))
     }
 
     pub fn mouse_motion(&mut self, dx: f64, dy: f64) {

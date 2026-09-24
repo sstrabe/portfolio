@@ -10,6 +10,10 @@ pub fn run(o: &Options) -> Result<(), String> {
     if let Some(k) = o.near_star {
         park_near_star(&mut world, k)?;
     }
+    if o.autopilot {
+        let p = world.toggle_orbit_autopilot().ok_or("no planet for the autopilot")?;
+        println!("autopilot: into orbit around {}", crate::hud::planet_name(&world, p));
+    }
     let (n, cap) = (world.cluster.len() as u32, world.cluster.history.capacity() as u32);
     let gpu = pollster::block_on(Gpu::new(crate::instance(), None, (w, h), n, cap))?;
     let mut s = Session::new(world, gpu);
@@ -26,6 +30,9 @@ pub fn run(o: &Options) -> Result<(), String> {
             input.boost = true;
         }
         s.frame(dt, &input);
+        for note in s.events().iter().filter_map(|e| crate::hud::note(&s.world, e)) {
+            println!("{note}");
+        }
         // Keep the GPU from queueing up an unbounded amount of work.
         s.gpu.wait();
     }
@@ -42,6 +49,14 @@ pub fn run(o: &Options) -> Result<(), String> {
     enc.write_header().and_then(|mut wr| wr.write_image_data(&raw[8..])).map_err(|e| format!("png: {e}"))?;
     let t = s.world.telemetry();
     println!("wrote {} ({cw}x{ch}) at τ = {:.1} M, t = {:.1} M, r = {:.2} M", o.out, t.tau, t.t, t.r);
+    let mut line = format!("×{:.0} warp · {}", t.warp, crate::hud::throttle(&t));
+    if let Some(p) = &t.planet {
+        line = format!("{} · {line}", crate::hud::planet(&s.world, p));
+    }
+    if let Some(phase) = t.autopilot {
+        line = format!("AUTOPILOT: {phase} · {line}");
+    }
+    println!("{line}");
     Ok(())
 }
 
