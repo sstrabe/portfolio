@@ -1,5 +1,6 @@
-//! Native desktop build of the Kerr nucleus: the black hole, the star cluster
-//! and your ship, on Vulkan, Metal or DX12. No portfolio stations or content.
+//! Native desktop build of the Kerr nucleus: Sagittarius A* at its real
+//! scale, its star cluster and your ship, on Vulkan, Metal or DX12. No
+//! portfolio stations or content.
 //!
 //! ```text
 //! kerr-nucleus [--stars N] [--fov DEG] [--scale S]
@@ -19,6 +20,10 @@ pub struct Options {
     pub headless: Option<(u32, u32)>,
     pub seconds: f64,
     pub out: String,
+    /// Headless: start this many stellar radii from the nearest star.
+    pub near_star: Option<f64>,
+    /// Headless: thrust forward (with boost) for the whole flight.
+    pub burn: bool,
 }
 
 const USAGE: &str = "\
@@ -28,26 +33,44 @@ USAGE:
     kerr-nucleus [OPTIONS]
 
 OPTIONS:
-    --stars N           Cluster size (default 384)
+    --stars N           Cluster size (default 1500)
     --fov DEG           Vertical field of view (default 75)
     --scale S           Fixed ray-tracing resolution scale 0.2–1 (default: adaptive)
     --headless WxH      Render offscreen and save a PNG instead of opening a window
     --seconds S         Headless: seconds of flight before the shot (default 2)
     --out FILE          Headless: output path (default kerr-nucleus.png)
+    --near-star K       Headless: start K stellar radii from the nearest star
+    --burn              Headless: thrust forward with boost during the flight
     -h, --help          Show this help
 
 CONTROLS:
-    W/S thrust, A/D strafe, Space/C up/down, drag or arrows to turn, Q/E roll,
-    Shift boost, F11 fullscreen, Esc leave fullscreen, Ctrl+Q quit.
+    Click to steer with the mouse (Esc releases it), I inverts mouse Y.
+    W/S thrust, A/D strafe, Space/C up/down, arrows turn, Q/E roll,
+    Shift boost (5x), X brake (to the local rest frame),
+    , / . halve / double the time warp, F11 fullscreen, Ctrl+Q quit.
     Telemetry is shown in the window title.
+
+SCALE:
+    Real Sagittarius A*: 4.3 million solar masses, stars from ~100 AU out to
+    ~20,000 AU. From that far the hole is smaller than a pixel: look for the
+    lensing of the stars behind it, or fly in. Distances are huge; accelerate
+    to high gamma and time dilation makes the trips short in ship time.
 
 ENVIRONMENT:
     WGPU_BACKEND=vulkan|metal|dx12  Force a graphics backend
 ";
 
 fn parse() -> Result<Options, String> {
-    let mut o =
-        Options { stars: 384, fov: 75.0, scale: None, headless: None, seconds: 2.0, out: "kerr-nucleus.png".into() };
+    let mut o = Options {
+        stars: 384,
+        fov: 75.0,
+        scale: None,
+        headless: None,
+        seconds: 2.0,
+        out: "kerr-nucleus.png".into(),
+        near_star: None,
+        burn: false,
+    };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut value = |name: &str| args.next().ok_or(format!("{name} needs a value"));
@@ -66,6 +89,10 @@ fn parse() -> Result<Options, String> {
             }
             "--seconds" => o.seconds = value("--seconds")?.parse().map_err(|e| format!("--seconds: {e}"))?,
             "--out" => o.out = value("--out")?,
+            "--near-star" => {
+                o.near_star = Some(value("--near-star")?.parse().map_err(|e| format!("--near-star: {e}"))?)
+            }
+            "--burn" => o.burn = true,
             other => return Err(format!("unknown option {other}\n\n{USAGE}")),
         }
     }
@@ -88,7 +115,7 @@ pub fn instance() -> wgpu::Instance {
     wgpu::Instance::new(desc)
 }
 
-/// The cluster with no stations: nothing but the hole, the stars and you.
+/// Sagittarius A* at its real scale: the hole, its stars and you.
 pub fn world(stars: u32) -> World {
-    World::new(render::world_config(0, stars, 1))
+    World::new(kerr::world::WorldConfig::sgr_a(stars as usize, 1))
 }

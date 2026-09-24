@@ -117,3 +117,26 @@ so anything the ray meets with 4-velocity `w` has `g = ν_obs/ν_emit = 1/(P·w)
 * The GPU uses `f32` RK4 with steps proportional to `r`. The CPU uses `f64`,
   and the station screen positions handed to the page come from the CPU
   solver.
+
+## Realistic mode (desktop)
+
+`WorldConfig::sgr_a` uses the physical star model:
+
+- **Masses:** Salpeter, 0.5–40 M☉.
+- **Main sequence:** R ∝ M^0.8 below 1 M☉ and M^0.57 above. L follows a
+  piecewise power law in mass (index 2.3, 4 or 3.5 depending on the range).
+- **Red giants:** 8% of stars, 10–60 R☉ at 3600–4800 K.
+- **Temperature:** from L and R.
+
+Weak-field pulls use the real masses, so they are genuinely tiny. They are
+refreshed every 16 history ticks (~3 × 10⁴ M), far shorter than any orbital
+timescale there.
+
+- **Stars as points.** Point flux is `L g⁴ / area` in L☉/M². It is compared
+  with the flux of a 7th-magnitude star, then raised by an eye-like
+  adaptation: the fifth-brightest star, Doppler boost included, sits 10⁴
+  times above the visibility limit.
+- **Stars as discs.** A star is drawn as a disc once its angular radius
+  exceeds a third of a pixel. The disc sits on the flat-space past light cone
+  and moves with the star, has limb darkening (u = 0.6), and has the same
+  total flux as the point it replaces.

@@ -35,11 +35,17 @@ fn vs_sprite(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     }
     let bm = bodies[ii / 2u];
     let g = st.info.x;
-    var e = st.info.y * frame.screen.w;
+    // Brightness in units of the faintest visible star.
+    var b = st.info.y / frame.extra.y;
     if (bm.b.x < 0.5) {
-        e *= bm.b.y;
+        b *= bm.b.y;
     }
-    if (e < 2.0e-3) {
+    // Stars resolved into discs are drawn by the ray tracer instead.
+    let px = 2.0 * frame.cam.x / frame.screen.y;
+    // Angular radius R/D, with D² ≈ L g⁴ / flux the (lensed) distance.
+    let theta = bm.b.w * sqrt(st.info.y / max(bm.a.w * g * g * g * g, 1e-30));
+    b *= 1.0 - smoothstep(0.5, 1.5, theta / px);
+    if (b < 0.3) {
         return o;
     }
     if (bm.b.x < 0.5) {
@@ -48,11 +54,13 @@ fn vs_sprite(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     } else {
         o.color = blackbody(bm.a.z * g);
     }
-    let sigma = clamp(0.75 + 0.5 * log2(1.0 + e), 0.75, 14.0);
-    o.peak = 6.0 * e / (TAU * sigma * sigma);
+    let sigma = clamp(0.7 + 0.35 * log2(1.0 + sqrt(b)), 0.7, 10.0);
+    o.peak = star_response(b);
+    // Cover the glow out to where it fades below 1% of full brightness.
+    let extent = sqrt(2.0 * log(max(o.peak / 0.01, 1.5)));
     let c = corners[vi];
-    o.local = c * 3.0;
-    o.pos = vec4<f32>(ndc.xy + c * 3.0 * sigma * 2.0 / frame.screen.xy, 0.0, 1.0);
+    o.local = c * extent;
+    o.pos = vec4<f32>(ndc.xy + c * extent * sigma * 2.0 / frame.screen.xy, 0.0, 1.0);
     return o;
 }
 

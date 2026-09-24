@@ -15,6 +15,7 @@ use wgpu::util::DeviceExt;
 
 pub use crate::frame::{
     ATLAS_CELL_H, ATLAS_CELL_W, ATLAS_COLS, ATLAS_ROWS, BodyMeta, FrameUniforms, PANEL_SLOTS, PanelUniform,
+    SPHERE_SLOTS, SphereUniform,
 };
 
 const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -36,6 +37,7 @@ pub struct Gpu {
     history_buf: wgpu::Buffer,
     meta_buf: wgpu::Buffer,
     panel_buf: wgpu::Buffer,
+    sphere_buf: wgpu::Buffer,
     /// Station-card atlas; only the web engine uploads into it.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     atlas: wgpu::Texture,
@@ -174,6 +176,12 @@ impl Gpu {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let sphere_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("spheres"),
+            size: (SPHERE_SLOTS * std::mem::size_of::<SphereUniform>()) as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let atlas = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("panel atlas"),
             size: wgpu::Extent3d {
@@ -273,6 +281,7 @@ impl Gpu {
                 entry(1, &panel_buf),
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&atlas_view) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&linear) },
+                entry(4, &sphere_buf),
             ],
         });
 
@@ -289,6 +298,7 @@ impl Gpu {
             history_buf,
             meta_buf,
             panel_buf,
+            sphere_buf,
             atlas,
             linear,
             images_pipeline,
@@ -383,6 +393,10 @@ impl Gpu {
 
     pub fn write_meta(&self, meta: &[BodyMeta]) {
         self.queue.write_buffer(&self.meta_buf, 0, bytemuck::cast_slice(meta));
+    }
+
+    pub fn write_spheres(&self, spheres: &[SphereUniform; SPHERE_SLOTS]) {
+        self.queue.write_buffer(&self.sphere_buf, 0, bytemuck::cast_slice(spheres));
     }
 
     pub fn write_panels(&self, panels: &[PanelUniform; PANEL_SLOTS]) {

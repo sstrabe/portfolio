@@ -20,9 +20,22 @@ struct Panels {
     items: array<Panel, 8>,
 }
 
+// A nearby star close enough to show a disc: centre relative to the
+// observer at emission time `center.w`, moving with `vel`.
+struct Sphere {
+    center: vec4<f32>,  // xyz relative to the observer, emission time
+    vel: vec4<f32>,     // coordinate velocity, radius
+    star: vec4<f32>,    // temperature (K), luminosity, unused, unused
+}
+
+struct Spheres {
+    items: array<Sphere, 16>,
+}
+
 @group(0) @binding(1) var<uniform> panels: Panels;
 @group(0) @binding(2) var atlas_tex: texture_2d<f32>;
 @group(0) @binding(3) var atlas_smp: sampler;
+@group(0) @binding(4) var<uniform> spheres: Spheres;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -90,6 +103,67 @@ fn panel_hit(a: vec4<f32>, b: vec4<f32>, p: vec4<f32>) -> PanelHit {
         // sRGB texel → linear emission.
         let lin = pow(texel.rgb, vec3<f32>(2.2));
         out.color = (lin * pn.atlas.z + vec3<f32>(0.004, 0.006, 0.012)) * shift;
+    }
+    return out;
+}
+
+// Does the step a → b (observer-relative) hit a nearby star's surface? The
+// star is placed where it is at the step's mid time. Seen colour is the
+// blackbody at g·T with limb darkening; surface brightness matches the
+// star's point-source brightness spread over its disc.
+fn sphere_hit(a: vec4<f32>, b: vec4<f32>, p: vec4<f32>) -> PanelHit {
+    var out: PanelHit;
+    out.hit = false;
+    var best = 2.0;
+    let d = b.yzw - a.yzw;
+    let len = length(d);
+    if (len <= 0.0) {
+        return out;
+    }
+    let dir = d / len;
+    for (var j = 0u; j < u32(frame.extra.z); j++) {
+        let sp = spheres.items[j];
+        let radius = sp.vel.w;
+        // Place the star where it is when the ray passes it: start from its
+        // emission time, then refine with the time at the hit.
+        var t_hit = sp.center.w;
+        var s = -1.0;
+        var c = sp.center.xyz;
+        for (var it = 0; it < 3; it++) {
+            c = sp.center.xyz + sp.vel.xyz * (t_hit - sp.center.w);
+            let oc = a.yzw - c;
+            // Closest approach along the segment, written to avoid squaring
+            // the (possibly long) distances.
+            let t0 = -dot(oc, dir);
+            let miss = length(cross(oc, dir));
+            if (miss >= radius || length(oc) <= radius) {
+                s = -1.0;
+                break;
+            }
+            s = (t0 - sqrt(radius * radius - miss * miss)) / len;
+            t_hit = mix(a.x, b.x, s);
+        }
+        if (s < 0.0 || s > 1.0 || s >= best) {
+            continue;
+        }
+        best = s;
+        out.hit = true;
+        let x = a.yzw + d * s;
+        let nrm = normalize(x - c);
+        let mu = max(dot(nrm, -dir), 0.0);
+        let w = four_velocity(frame.obs.yzw + x, sp.vel.xyz);
+        let g = clamp(1.0 / max(dot(p, w), 1e-6), 1e-3, 1e3);
+        let dist = max(length(c), radius);
+        let g2 = g * g;
+        let total = sp.star.y * g2 * g2 / (dist * dist) / frame.extra.y;
+        let disc = PI * radius * radius / (dist * dist);
+        let limb = (1.0 - 0.6 * (1.0 - mu)) / 0.8;
+        let per_pixel = total * min(frame.cam.z * frame.cam.z / disc, 1.0);
+        // Granulation: faint convective mottling that moves with the surface.
+        let cells = 0.9 + 0.2 * value_noise(nrm * 60.0 + vec3<f32>(f32(j) * 17.0));
+        // Capped so the photosphere keeps its colour and limb darkening
+        // instead of clipping to white.
+        out.color = blackbody(sp.star.x * g) * min(star_response(per_pixel), 1.0) * limb * cells;
     }
     return out;
 }
@@ -238,7 +312,7 @@ fn fs_sky(in: VsOut) -> @location(0) vec4<f32> {
     var esc_dir = n;
     var g = 1.0;
     for (var i = 0u; i < frame.counts2.x; i++) {
-        let pos = s.x.yzw;
+        let pos = abs_pos(s.x);
         let r = ks_radius(pos);
         if (r - rp < frame.march.w) {
             kind = 1u;
@@ -255,6 +329,14 @@ fn fs_sky(in: VsOut) -> @location(0) vec4<f32> {
                 break;
             }
         }
+        if (frame.extra.z > 0.0) {
+            let sh = sphere_hit(s.x, nxt.x, nxt.p);
+            if (sh.hit) {
+                kind = 2u;
+                color = sh.color;
+                break;
+            }
+        }
         s = nxt;
         if (r > r_esc && dot(pos, k1.x.yzw) > 0.0) {
             kind = 0u;
@@ -266,7 +348,8 @@ fn fs_sky(in: VsOut) -> @location(0) vec4<f32> {
     // Footprint of this pixel on the celestial sphere (lensing included).
     let fp = max(length(fwidth(esc_dir)), 0.25 * frame.cam.z);
     if (kind == 0u) {
-        color = sky_radiance(esc_dir, g, fp);
+        // The diffuse sky fades as the eye adapts to bright stars.
+        color = sky_radiance(esc_dir, g, fp) * frame.extra.w;
     }
     return vec4<f32>(color, 1.0);
 }

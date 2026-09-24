@@ -151,7 +151,7 @@ export function helpDialog(): HTMLDialogElement {
       <dt><kbd>W</kbd> <kbd>S</kbd></dt><dd>Thrust forward / back</dd>
       <dt><kbd>A</kbd> <kbd>D</kbd></dt><dd>Strafe left / right</dd>
       <dt><kbd>Space</kbd> <kbd>C</kbd></dt><dd>Thrust up / down</dd>
-      <dt>Drag, <kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Turn</dd>
+      <dt>Click, then mouse; <kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Turn (<kbd>Esc</kbd> releases the mouse, <kbd>I</kbd> inverts up/down)</dd>
       <dt><kbd>Q</kbd> <kbd>E</kbd></dt><dd>Roll</dd>
       <dt><kbd>Shift</kbd></dt><dd>Boost (6× thrust)</dd>
       <dt><kbd>X</kbd></dt><dd>Brake: match the nearest station's velocity</dd>

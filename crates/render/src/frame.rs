@@ -19,7 +19,8 @@ pub const ATLAS_CELL_H: u32 = 320;
 pub const PANEL_RANGE: f64 = 160.0;
 pub const MAX_RAY_STEPS: u32 = 420;
 pub const NEWTON_ITERATIONS: u32 = 2;
-pub const SPRITE_GAIN: f32 = 12000.0;
+/// Nearby stars that can be ray traced as discs at once.
+pub const SPHERE_SLOTS: usize = 16;
 
 /// Mirrors `struct Frame` in `common.wgsl`.
 #[repr(C)]
@@ -38,6 +39,7 @@ pub struct FrameUniforms {
     pub counts: [u32; 4],
     pub counts2: [u32; 4],
     pub screen: [f32; 4],
+    pub extra: [f32; 4],
 }
 
 /// Mirrors `struct BodyMeta` in `common.wgsl`.
@@ -57,6 +59,15 @@ pub struct PanelUniform {
     pub right: [f32; 4],
     pub up: [f32; 4],
     pub atlas: [f32; 4],
+}
+
+/// Mirrors `struct Sphere` in `sky.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct SphereUniform {
+    pub center: [f32; 4],
+    pub vel: [f32; 4],
+    pub star: [f32; 4],
 }
 
 /// What the web layer needs to place content over a station.
@@ -96,6 +107,9 @@ impl StationScreen {
 pub struct FrameParams {
     pub fov_deg: f64,
     pub exposure: f64,
+    /// Point-source flux that maps to the faintest visible star (see
+    /// [`adapted_flux_ref`]).
+    pub flux_ref: f64,
     pub wall_time: f64,
     pub hdr: (u32, u32),
     pub out: (u32, u32),
@@ -108,6 +122,7 @@ pub struct Built {
     pub uniforms: FrameUniforms,
     pub meta: Vec<BodyMeta>,
     pub panels: [PanelUniform; PANEL_SLOTS],
+    pub spheres: [SphereUniform; SPHERE_SLOTS],
     pub stations: Vec<StationScreen>,
 }
 
@@ -132,6 +147,10 @@ pub fn build(world: &World, p: &FrameParams) -> Built {
     let tan_half = (p.fov_deg.to_radians() * 0.5).tan();
     let aspect = p.out.0 as f64 / p.out.1.max(1) as f64;
     let pos = world.pilot.position();
+    let pixel_angle = 2.0 * tan_half / p.hdr.1.max(1) as f64;
+    let (spheres, sphere_count) = spheres(world, pixel_angle);
+    // Image rays must reach the farthest body.
+    let reach = cluster.bodies.iter().map(|b| vec3::norm(b.position())).fold(0.0, f64::max);
 
     let uniforms = FrameUniforms {
         obs: [0.0, pos[0] as f32, pos[1] as f32, pos[2] as f32],
@@ -139,10 +158,12 @@ pub fn build(world: &World, p: &FrameParams) -> Built {
         e1: f4(e[1]),
         e2: f4(e[2]),
         e3: f4(e[3]),
-        cam: [tan_half as f32, aspect as f32, (2.0 * tan_half / p.hdr.1.max(1) as f64) as f32, p.exposure as f32],
+        cam: [tan_half as f32, aspect as f32, pixel_angle as f32, p.exposure as f32],
         view: [p.hdr.0 as f32, p.hdr.1 as f32, p.wall_time as f32, 0.0],
         kerr: [world.kerr.m as f32, world.kerr.a as f32, world.kerr.r_plus() as f32, 120.0],
-        march: [0.05, 0.02, 40.0, world.ray.horizon_eps as f32],
+        // Steps grow with r without a cap: segments are straight chords,
+        // exact for plane and sphere tests; bending sets the accuracy.
+        march: [0.05, 0.02, 1.0e30, world.ray.horizon_eps as f32],
         hist: [
             (h.t_newest() - t_obs) as f32,
             h.dt() as f32,
@@ -151,7 +172,14 @@ pub fn build(world: &World, p: &FrameParams) -> Built {
         ],
         counts: [cluster.len() as u32, h.capacity() as u32, h.newest_slot() as u32, h.len() as u32],
         counts2: [MAX_RAY_STEPS, p.panel_slots, NEWTON_ITERATIONS, world.station_count() as u32],
-        screen: [p.out.0 as f32, p.out.1 as f32, if p.srgb_encode { 1.0 } else { 0.0 }, SPRITE_GAIN],
+        screen: [p.out.0 as f32, p.out.1 as f32, if p.srgb_encode { 1.0 } else { 0.0 }, 0.0],
+        // w: adapting to bright stars dims the diffuse sky by this factor.
+        extra: [
+            (1.2 * reach).max(120.0) as f32,
+            p.flux_ref as f32,
+            sphere_count as f32,
+            (world.cfg.star_flux_ref / p.flux_ref) as f32,
+        ],
     };
 
     let meta = cluster
@@ -167,7 +195,7 @@ pub fn build(world: &World, p: &FrameParams) -> Built {
             let died = if b.died_at.is_finite() { (b.died_at - t_obs) as f32 } else { 1.0e30 };
             BodyMeta {
                 a: [(b.valid_from - t_obs) as f32, died, b.params.temperature as f32, b.params.luminosity as f32],
-                b: [kind, beacon(world, i), b.generation as f32, 0.0],
+                b: [kind, beacon(world, i), b.generation as f32, b.params.radius as f32],
             }
         })
         .collect();
@@ -192,7 +220,76 @@ pub fn build(world: &World, p: &FrameParams) -> Built {
         })
         .collect();
 
-    Built { uniforms, meta, panels: panels(world, &obs, t_obs, p.highlight), stations }
+    Built { uniforms, meta, panels: panels(world, &obs, t_obs, p.highlight), spheres, stations }
+}
+
+/// Exposure the eye would adapt to: the faintest-visible flux, raised so
+/// that the few brightest stars sit at a bright but not overwhelming level.
+/// Fluxes include the ship's Doppler boost g⁴ (flat-space estimate), so the
+/// eye also adapts to the blazing forward cone at high speed. Never
+/// darker-adapted than the configured limit.
+pub fn adapted_flux_ref(world: &World) -> f64 {
+    let base = world.cfg.star_flux_ref;
+    if !world.cfg.auto_exposure {
+        return base;
+    }
+    let obs = world.pilot.position();
+    let u = world.pilot.e[0];
+    let mut fluxes: Vec<f64> = world
+        .cluster
+        .bodies
+        .iter()
+        .filter(|b| b.alive && b.params.kind == BodyKind::Star)
+        .map(|b| {
+            let to = vec3::sub(b.position(), obs);
+            let d = vec3::norm(to).max(b.params.radius);
+            // g = u^t + d̂·u for light arriving from direction d̂.
+            let g = u[0] + vec3::dot(vec3::scale(to, 1.0 / d), [u[1], u[2], u[3]]);
+            b.params.luminosity * g.powi(4) / (d * d)
+        })
+        .collect();
+    fluxes.sort_by(|a, b| b.total_cmp(a));
+    // The 5th brightest reads as a brilliant star (10⁴× the faintest, i.e.
+    // ten magnitudes of stars remain visible).
+    fluxes.get(4).map_or(base, |f| (f / 1.0e4).max(base))
+}
+
+/// The stars near enough to show a disc (angular radius above a third of a
+/// render pixel), largest first, each placed where the pilot sees it: on the
+/// flat-space past light cone, which is exact enough this close.
+fn spheres(world: &World, pixel_angle: f64) -> ([SphereUniform; SPHERE_SLOTS], usize) {
+    let cluster = &world.cluster;
+    let obs = world.pilot.position();
+    let t_obs = world.pilot.x[0];
+    let mut near: Vec<(f64, usize)> = cluster
+        .bodies
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.alive && b.params.radius > 0.0)
+        .map(|(i, b)| (b.params.radius / vec3::norm(vec3::sub(b.position(), obs)).max(1e-9), i))
+        .filter(|(theta, _)| *theta > pixel_angle / 3.0)
+        .collect();
+    near.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut out = [SphereUniform::default(); SPHERE_SLOTS];
+    let mut n = 0;
+    for &(_, i) in near.iter().take(SPHERE_SLOTS) {
+        let b = &cluster.bodies[i];
+        let mut t_ret = t_obs - vec3::norm(vec3::sub(b.position(), obs));
+        let mut sample = cluster.sample_at(i, t_ret);
+        for _ in 0..4 {
+            let Some(s) = sample else { break };
+            t_ret = t_obs - vec3::norm(vec3::sub(s.pos, obs));
+            sample = cluster.sample_at(i, t_ret);
+        }
+        let Some(s) = sample else { continue };
+        out[n] = SphereUniform {
+            center: f3w(vec3::sub(s.pos, obs), t_ret - t_obs),
+            vel: f3w(s.vel, b.params.radius),
+            star: [b.params.temperature as f32, b.params.luminosity as f32, 0.0, 0.0],
+        };
+        n += 1;
+    }
+    (out, n)
 }
 
 /// Station beacons fade out as the station's own card becomes legible.
@@ -227,7 +324,7 @@ fn panels(world: &World, obs: &Observer, t_obs: f64, highlight: i32) -> [PanelUn
         let col = i as u32 % ATLAS_COLS;
         let row = i as u32 / ATLAS_COLS;
         out[slot] = PanelUniform {
-            center: f3w(v.emit_pos, v.t_emit - t_obs),
+            center: f3w(vec3::sub(v.emit_pos, obs.position()), v.t_emit - t_obs),
             vel: f3w(v.emit_vel, 1.0),
             right: f3w(vec3::scale(right, half_w), col as f64 / ATLAS_COLS as f64),
             up: f3w(vec3::scale(up, half_h), row as f64 / ATLAS_ROWS as f64),
@@ -250,8 +347,9 @@ mod tests {
 
     #[test]
     fn uniform_layout_matches_wgsl() {
-        // 13 vec4s; WGSL uniform structs of vec4 members have no padding.
-        assert_eq!(std::mem::size_of::<FrameUniforms>(), 13 * 16);
+        // 14 vec4s; WGSL uniform structs of vec4 members have no padding.
+        assert_eq!(std::mem::size_of::<FrameUniforms>(), 14 * 16);
+        assert_eq!(std::mem::size_of::<SphereUniform>(), 48);
         assert_eq!(std::mem::size_of::<BodyMeta>(), 32);
         assert_eq!(std::mem::size_of::<PanelUniform>(), 80);
     }
@@ -268,6 +366,7 @@ mod tests {
         let params = FrameParams {
             fov_deg: 75.0,
             exposure: 1.0,
+            flux_ref: w.cfg.star_flux_ref,
             wall_time: 0.0,
             hdr: (640, 360),
             out: (1280, 720),

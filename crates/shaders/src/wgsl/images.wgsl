@@ -29,9 +29,10 @@ fn approach(body: u32, n: vec3<f32>, w0: f32, w1: f32) -> Approach {
     var prev_d = vec3<f32>(0.0);
     var prev_s: BodySample;
     let rp = frame.kerr.z;
-    let r_esc = max(frame.kerr.w, 2.5 * length(frame.obs.yzw));
+    // Rays must reach as far as the farthest body.
+    let r_esc = max(frame.extra.x, 2.5 * length(frame.obs.yzw));
     for (var i = 0u; i < frame.counts2.x; i++) {
-        let pos = s.x.yzw;
+        let pos = abs_pos(s.x);
         let r = ks_radius(pos);
         if (r - rp < frame.march.w) {
             break;
@@ -39,7 +40,7 @@ fn approach(body: u32, n: vec3<f32>, w0: f32, w1: f32) -> Approach {
         let k1 = phase_rhs(s);
         let h = ray_step(s, k1, r);
         let nx = rk4(s, k1, h);
-        let npos = nx.x.yzw;
+        let npos = abs_pos(nx.x);
         let dpsi = atan2(length(cross(pos, npos)), dot(pos, npos));
         let seg = length(npos - pos);
         let psi1 = psi + dpsi;

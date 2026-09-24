@@ -136,7 +136,7 @@ export async function start(host: HTMLElement, fail: (reason: unknown) => void) 
   }).observe(canvas);
 
   // Adaptive resolution for the per-pixel ray tracer.
-  let scale = small ? 0.4 : 0.55;
+  let scale = small ? 0.6 : 0.85;
   engine.setRenderScale(scale);
   let avg = 16;
   let last = performance.now();
@@ -170,8 +170,8 @@ export async function start(host: HTMLElement, fail: (reason: unknown) => void) 
       }
     }
     avg = avg * 0.95 + dt * 1000 * 0.05;
-    if (avg > 22 && scale > 0.25) scale = Math.max(0.25, scale * 0.97);
-    else if (avg < 14 && scale < 0.8) scale = Math.min(0.8, scale * 1.01);
+    if (avg > 22 && scale > 0.5) scale = Math.max(0.5, scale * 0.98);
+    else if (avg < 14 && scale < 1) scale = Math.min(1, scale * 1.01);
     engine.setRenderScale(scale);
     requestAnimationFrame(frame);
   };

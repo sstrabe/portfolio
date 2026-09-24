@@ -23,7 +23,8 @@ struct Frame {
     hist: vec4<f32>,     // newest sample time, sample spacing, oldest sample time, lookback limit
     counts: vec4<u32>,   // bodies, ring capacity, newest slot, filled samples
     counts2: vec4<u32>,  // max ray steps, panel count, newton iterations, station count
-    screen: vec4<f32>,   // output width, height (px), sRGB-encode flag, sprite gain
+    screen: vec4<f32>,   // output width, height (px), sRGB-encode flag, unused
+    extra: vec4<f32>,    // image-ray escape radius, faintest visible flux, star discs, sky adaptation
 }
 
 // Per-body metadata; times relative to the observer.
@@ -130,7 +131,16 @@ fn four_velocity(p: vec3<f32>, vel: vec3<f32>) -> vec4<f32> {
 
 // ---------------------------------------------------------------------------
 // Null geodesics, Hamiltonian form H = ½ g^{μν} p_μ p_ν (see geodesic.rs).
+//
+// Ray positions are kept relative to the observer (who sits at the spatial
+// origin), so nearby objects stay precise in f32 even far from the hole;
+// the metric is evaluated at `frame.obs.yzw + x`.
 // ---------------------------------------------------------------------------
+
+// Position relative to the hole of a ray event.
+fn abs_pos(x: vec4<f32>) -> vec3<f32> {
+    return frame.obs.yzw + x.yzw;
+}
 
 struct Phase {
     x: vec4<f32>,  // event
@@ -138,7 +148,7 @@ struct Phase {
 }
 
 fn phase_rhs(s: Phase) -> Phase {
-    let k = ks_grad(s.x.yzw);
+    let k = ks_grad(abs_pos(s.x));
     let pp = s.p.yzw;
     let ll = -s.p.x + dot(k.l, pp);
     let fl = k.f * ll;
@@ -167,7 +177,7 @@ fn rk4(s: Phase, k1: Phase, h: f32) -> Phase {
 // P = −u + n^a e_a, normalized so the observed frequency is 1.
 fn backward_ray(n: vec3<f32>) -> Phase {
     let pu = -frame.e0 + n.x * frame.e1 + n.y * frame.e2 + n.z * frame.e3;
-    return Phase(frame.obs, lower(frame.obs.yzw, pu));
+    return Phase(vec4<f32>(0.0), lower(frame.obs.yzw, pu));
 }
 
 // Step length in the affine parameter for a spatial advance ∝ r.
@@ -188,6 +198,13 @@ fn dir_to_ndc(n: vec3<f32>) -> vec3<f32> {
     let t = frame.cam.x;
     let fwd = max(n.x, 1e-6);
     return vec3<f32>(-n.y / (fwd * t * frame.cam.y), n.z / (fwd * t), n.x);
+}
+
+// ---------------------------------------------------------------------------
+// Perceived brightness of a point source: `b` is its flux in units of the
+// faintest visible flux. Shared by star sprites and resolved star discs.
+fn star_response(b: f32) -> f32 {
+    return 0.06 * pow(max(b, 0.0), 0.6);
 }
 
 // ---------------------------------------------------------------------------

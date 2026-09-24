@@ -56,6 +56,9 @@ pub struct WorldConfig {
     /// Rendering: point-source flux (L☉/M² for physical stars) that maps to
     /// the faintest visible star.
     pub star_flux_ref: f64,
+    /// Rendering: adapt exposure to the brightest stars in view, like an eye
+    /// or a camera, instead of a fixed dark-adapted exposure.
+    pub auto_exposure: bool,
 }
 
 impl Default for WorldConfig {
@@ -76,8 +79,9 @@ impl Default for WorldConfig {
             autopilot_cruise: 0.45,
             start_station: 0,
             start_radius: 60.0,
-            // Tuned so the stylized cluster's stars look as they always have.
-            star_flux_ref: 2.5e-5,
+            // Tuned by eye for the stylized cluster.
+            star_flux_ref: 1.8e-6,
+            auto_exposure: false,
         }
     }
 }
@@ -125,6 +129,7 @@ impl WorldConfig {
             // Faintest visible: apparent magnitude 7, a little past what the
             // eye sees on Earth.
             star_flux_ref: flux_of_magnitude(7.0),
+            auto_exposure: true,
             ..Self::default()
         }
     }

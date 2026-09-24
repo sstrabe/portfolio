@@ -25,6 +25,8 @@ pub struct Session {
     /// Station whose card frame glows (-1 for none).
     pub highlight: i32,
     wall_time: f64,
+    /// Current (smoothed) exposure adaptation, see `frame::adapted_flux_ref`.
+    flux_ref: f64,
     uploaded_newest: f64,
     generations: Vec<u32>,
     stations: Vec<StationScreen>,
@@ -34,6 +36,7 @@ impl Session {
     /// `gpu` must have been created for `world`'s body count and history
     /// capacity.
     pub fn new(world: World, gpu: Gpu) -> Self {
+        let flux_ref = frame::adapted_flux_ref(&world);
         let mut s = Self {
             generations: world.cluster.bodies.iter().map(|b| b.generation).collect(),
             stations: Vec::new(),
@@ -43,6 +46,7 @@ impl Session {
             exposure: 1.0,
             highlight: -1,
             wall_time: 0.0,
+            flux_ref,
             uploaded_newest: f64::NEG_INFINITY,
         };
         s.upload_all_history();
@@ -53,6 +57,10 @@ impl Session {
     pub fn frame(&mut self, wall_dt: f64, input: &Input) {
         self.wall_time += wall_dt;
         self.world.step(wall_dt, input);
+        // Adapt exposure over about a second, in log space.
+        let target = frame::adapted_flux_ref(&self.world);
+        let k = (wall_dt / 0.8).min(1.0);
+        self.flux_ref = (self.flux_ref.ln() + (target.ln() - self.flux_ref.ln()) * k).exp();
         self.sync_history();
         self.upload_frame();
         self.gpu.render();
@@ -100,6 +108,7 @@ impl Session {
         let params = frame::FrameParams {
             fov_deg: self.fov_deg,
             exposure: self.exposure,
+            flux_ref: self.flux_ref,
             wall_time: self.wall_time,
             hdr: self.gpu.hdr_size(),
             out: self.gpu.output_size(),
@@ -111,6 +120,7 @@ impl Session {
         self.gpu.write_frame(&built.uniforms);
         self.gpu.write_meta(&built.meta);
         self.gpu.write_panels(&built.panels);
+        self.gpu.write_spheres(&built.spheres);
         self.stations = built.stations;
     }
 }

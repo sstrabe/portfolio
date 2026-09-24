@@ -4,8 +4,13 @@
 //
 // Ship axes: forward, left, up (right-handed). Positive pitch is nose
 // down, positive yaw turns left, positive roll lifts the left wing.
+//
+// Mouse: click to capture it (pointer lock), then it steers like any
+// first-person game: right looks right, down looks down (`I` inverts the
+// vertical axis); Esc releases it. Touch: drag the sky, which moves with
+// your finger.
 
-const MOUSE_RAD_PER_PX = 0.0035;
+const MOUSE_RAD_PER_PX = 0.0025;
 const TURN_RATE = 1.4; // must match WorldConfig::turn_rate (rad / wall s)
 
 export class Controls {
@@ -14,8 +19,10 @@ export class Controls {
   onAutopilotCancelled: () => void = () => {};
   onHelp: () => void = () => {};
   private keys = new Set<string>();
+  /** Look deltas since the last frame, in pixels: + right, + down. */
   private dragX = 0;
   private dragY = 0;
+  private invertY = false;
   private dragging: number | null = null;
   private lastX = 0;
   private lastY = 0;
@@ -29,6 +36,10 @@ export class Controls {
     addEventListener("keyup", (e) => this.key(e, false));
     addEventListener("blur", () => this.keys.clear());
     surface.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse") {
+        if (document.pointerLockElement !== surface) void surface.requestPointerLock?.();
+        return;
+      }
       if (this.dragging !== null) return;
       this.dragging = e.pointerId;
       this.lastX = e.clientX;
@@ -36,9 +47,15 @@ export class Controls {
       surface.setPointerCapture(e.pointerId);
     });
     surface.addEventListener("pointermove", (e) => {
+      if (document.pointerLockElement === surface) {
+        this.dragX += e.movementX;
+        this.dragY += e.movementY;
+        return;
+      }
       if (e.pointerId !== this.dragging) return;
-      this.dragX += e.clientX - this.lastX;
-      this.dragY += e.clientY - this.lastY;
+      // Dragging moves the sky with the finger: the view turns the other way.
+      this.dragX -= e.clientX - this.lastX;
+      this.dragY -= e.clientY - this.lastY;
       this.lastX = e.clientX;
       this.lastY = e.clientY;
     });
@@ -96,6 +113,10 @@ export class Controls {
         else this.undock = true;
         return;
       }
+      if (k === "KeyI") {
+        this.invertY = !this.invertY;
+        return;
+      }
       if (k === "KeyH" || k === "Slash") {
         this.onHelp();
         return;
@@ -126,7 +147,7 @@ export class Controls {
     // Mouse drag: turn by an angle proportional to the distance dragged.
     const k = dt > 0 ? MOUSE_RAD_PER_PX / (dt * TURN_RATE) : 0;
     v[3] = this.axis(["KeyE"], ["KeyQ"]);
-    v[4] = this.axis(["ArrowDown"], ["ArrowUp"]) + this.dragY * k;
+    v[4] = this.axis(["ArrowDown"], ["ArrowUp"]) + (this.invertY ? -this.dragY : this.dragY) * k;
     v[5] = this.axis(["ArrowLeft"], ["ArrowRight"]) - this.dragX * k;
     this.dragX = 0;
     this.dragY = 0;

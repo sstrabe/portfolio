@@ -95,10 +95,23 @@ visitor prefers reduced motion or last chose the plain version.
 
 ## Desktop app
 
-`crates/desktop` builds `kerr-nucleus`, a native window with the same physics
-and renderer on Vulkan, Metal or DX12. It shows only the black hole, the
-cluster and your ship, with no stations or portfolio content. Telemetry is in
-the window title.
+`crates/desktop` builds `kerr-nucleus`. It's a native window with the same
+physics and renderer on Vulkan, Metal or DX12, set at Sagittarius A*'s real
+scale. It has no stations or portfolio content.
+
+- **The hole:** 4.3 million solar masses. One `M` of time is 21 s, and 1 AU is
+  23.6 M.
+- **The stars:** 1,500 real stars, from about 100 AU out to 20,000 AU. They
+  have Salpeter masses, main-sequence and red-giant radii, luminosities and
+  temperatures, plus stellar-mass black holes. Close stars are ray traced as
+  limb-darkened discs with granulation; distant ones are points.
+- **What you see:** brightness is physical (apparent magnitude), with the
+  exposure adapting to the brightest stars in view the way an eye does. From
+  most places the hole itself is smaller than a pixel. You find it by the
+  lensing of the stars behind it, or by flying in.
+- **Travel:** distances are real and the speed limit is `c`. Accelerate to
+  high γ and time dilation makes the trips short in ship time. Your clock
+  drives the simulation, and `,` / `.` warp it. It starts at 1000× real time.
 
 ```sh
 cargo run -p desktop --release                  # window
@@ -106,17 +119,24 @@ cargo run -p desktop --release -- --help        # options
 cargo run -p desktop --release -- --headless 1920x1080 --seconds 5 --out shot.png
 ```
 
-Controls: `W`/`S`, `A`/`D`, `Space`/`C` to thrust, drag or arrow keys to
-turn, `Q`/`E` to roll, `Shift` to boost, `F11` for fullscreen, `Ctrl+Q` to
-quit. The ray-tracing resolution adapts to the frame rate unless you pass
-`--scale`. Set `WGPU_BACKEND=vulkan|metal|dx12` to pick a backend. CI builds
-binaries for Linux, Windows and macOS as workflow artifacts.
+Controls:
+- Click to steer with the mouse. Right looks right, down looks down; `I`
+  inverts up/down, and `Esc` releases the mouse.
+- `W`/`S`, `A`/`D`, `Space`/`C` thrust; arrow keys turn; `Q`/`E` roll.
+- `Shift` boosts, and `X` brakes to the local rest frame.
+- `F11` toggles fullscreen and `Ctrl+Q` quits.
 
-**RT cores.** The desktop app doesn't use hardware ray tracing. RT cores find
-where *straight* rays hit triangles in a spatial index. Here the rays are
-curved light paths, integrated step by step. That arithmetic runs on the
-ordinary shader cores, and the scene has no triangle geometry for RT cores to
-test.
+Telemetry is in the window title. The ray-tracing resolution adapts between
+50% and 100% unless you pass `--scale`. Set `WGPU_BACKEND=vulkan|metal|dx12`
+to pick a backend. CI builds binaries for Linux, Windows and macOS as
+workflow artifacts.
+
+**RT cores.** The desktop app doesn't use hardware ray tracing yet. The light
+paths are curved and are integrated step by step on the shader cores. Each
+step is a short straight segment, so geometry could be tested against it with
+RT-core ray queries. That becomes worthwhile once the world has triangle
+meshes. Spheres such as stars (and later planets and atmospheres) are cheaper
+to test analytically.
 
 ## Controls
 
@@ -125,7 +145,7 @@ test.
 | `W` / `S` | Thrust forward / back |
 | `A` / `D` | Strafe |
 | `Space` / `C` | Thrust up / down |
-| Drag, arrow keys | Turn |
+| Click, then mouse; arrow keys | Turn (`Esc` releases the mouse, `I` inverts up/down; on touch, drag the sky) |
 | `Q` / `E` | Roll |
 | `Shift` | Boost (6× thrust) |
 | `X` | Match velocity with the nearest station |
