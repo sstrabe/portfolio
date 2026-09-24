@@ -1,0 +1,57 @@
+//! The desktop's high-quality renderer (native only; the web keeps
+//! `render`).
+//!
+//! One compute pass traces every pixel spectrally, front to back: the ship,
+//! the star systems near the pilot (each in its own rest frame, so
+//! aberration and Doppler shifts are exact), then the Kerr geodesic out to
+//! nebulae and the distant galaxy. Point sources from the shared `images`
+//! pass are splatted as energy afterwards, and the optics turn radiance into
+//! an image. See `gpu.rs` for the pass order and `wgsl/hq_common.wgsl` for
+//! which bind group belongs to which feature.
+
+pub mod atmosphere;
+pub mod gpu;
+pub mod lens;
+pub mod near;
+pub mod nebula;
+pub mod post;
+pub mod session;
+pub mod shaders;
+pub mod ship;
+pub mod spectrum;
+
+pub use gpu::Gpu;
+pub use session::Session;
+
+use bytemuck::{Pod, Zeroable};
+
+/// Mirrors `struct HqFrame` in `hq_common.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct HqUniforms {
+    pub size: [u32; 4],
+    pub view: [f32; 4],
+    pub radiometry: [f32; 4],
+    pub near: [u32; 4],
+    pub units: [f32; 4],
+    pub rgb: [[f32; 4]; 12],
+}
+
+/// What features see when they update for a frame.
+pub struct FrameContext<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub world: &'a kerr::world::World,
+    pub near: &'a near::Selection,
+    pub hq: &'a HqUniforms,
+    pub frame_index: u32,
+    pub wall_time: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hq_uniform_layout_matches_wgsl() {
+        assert_eq!(std::mem::size_of::<super::HqUniforms>(), (5 + 12) * 16);
+    }
+}

@@ -357,7 +357,7 @@ dependencies = [
  "kerr",
  "png",
  "pollster",
- "render",
+ "render-hq",
  "wgpu",
  "winit",
 ]
@@ -1452,6 +1452,18 @@ dependencies = [
  "kerr",
  "shaders",
  "web-sys",
+ "wgpu",
+]
+
+[[package]]
+name = "render-hq"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "kerr",
+ "naga",
+ "render",
+ "shaders",
  "wgpu",
 ]
 

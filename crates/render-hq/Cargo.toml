@@ -1,0 +1,16 @@
+[package]
+name = "render-hq"
+description = "Native-only renderer for the desktop: spectral compute ray tracing with near-field planetary systems, atmospheres and physical optics."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+kerr = { path = "../kerr" }
+render = { path = "../render" }
+shaders = { path = "../shaders" }
+bytemuck = { version = "1.25", features = ["derive"] }
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "metal", "dx12"] }
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }

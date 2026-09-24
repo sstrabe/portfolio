@@ -3,13 +3,14 @@
 //! portfolio stations or content.
 //!
 //! ```text
-//! kerr-nucleus [--stars N] [--fov DEG] [--scale S]
+//! kerr-nucleus [--stars N] [--fov DEG] [--scale S] [--start cluster|planet]
 //! kerr-nucleus --headless 1280x720 [--seconds S] [--out shot.png]
 //! ```
 
 mod app;
 mod headless;
 mod input;
+mod start;
 
 use kerr::world::World;
 
@@ -24,6 +25,7 @@ pub struct Options {
     pub near_star: Option<f64>,
     /// Headless: thrust forward (with boost) for the whole flight.
     pub burn: bool,
+    pub start: start::Start,
 }
 
 const USAGE: &str = "\
@@ -36,6 +38,8 @@ OPTIONS:
     --stars N           Cluster size (default 1500)
     --fov DEG           Vertical field of view (default 75)
     --scale S           Fixed ray-tracing resolution scale 0.2–1 (default: adaptive)
+    --start WHERE       cluster (default): orbiting 800 AU from the hole;
+                        planet: just above the nearest Earth-like world at dawn
     --headless WxH      Render offscreen and save a PNG instead of opening a window
     --seconds S         Headless: seconds of flight before the shot (default 2)
     --out FILE          Headless: output path (default kerr-nucleus.png)
@@ -70,6 +74,7 @@ fn parse() -> Result<Options, String> {
         out: "kerr-nucleus.png".into(),
         near_star: None,
         burn: false,
+        start: start::Start::Cluster,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -93,6 +98,7 @@ fn parse() -> Result<Options, String> {
                 o.near_star = Some(value("--near-star")?.parse().map_err(|e| format!("--near-star: {e}"))?)
             }
             "--burn" => o.burn = true,
+            "--start" => o.start = value("--start")?.parse()?,
             other => return Err(format!("unknown option {other}\n\n{USAGE}")),
         }
     }
@@ -115,7 +121,12 @@ pub fn instance() -> wgpu::Instance {
     wgpu::Instance::new(desc)
 }
 
-/// Sagittarius A* at its real scale: the hole, its stars and you.
-pub fn world(stars: u32) -> World {
-    World::new(kerr::world::WorldConfig::sgr_a(stars as usize, 1))
+/// Sagittarius A* at its real scale: the hole, its stars and you, placed
+/// according to `start`.
+pub fn world(stars: u32, start: start::Start) -> Result<World, String> {
+    let mut world = World::new(kerr::world::WorldConfig::sgr_a(stars as usize, 1));
+    if let Some(place) = start::apply(&mut world, start)? {
+        eprintln!("start: {place}");
+    }
+    Ok(world)
 }

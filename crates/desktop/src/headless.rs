@@ -2,11 +2,11 @@
 
 use crate::Options;
 use crate::input::Controls;
-use render::{Gpu, Session};
+use render_hq::{Gpu, Session};
 
 pub fn run(o: &Options) -> Result<(), String> {
     let (w, h) = o.headless.expect("headless size");
-    let mut world = crate::world(o.stars);
+    let mut world = crate::world(o.stars, o.start)?;
     if let Some(k) = o.near_star {
         park_near_star(&mut world, k)?;
     }
