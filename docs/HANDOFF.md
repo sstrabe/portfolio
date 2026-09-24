@@ -196,12 +196,11 @@ listed"**:
   limb, ocean sun glint, clouds.
 - **The Crab Nebula** (Hubble composite).
 
-Two questions were asked and **not yet answered**:
-- **Which GPU is the desktop target?** On the laptop you can just look.
-- **Planets:** procedural only, or also a literal Earth with NASA Blue
-  Marble textures?
+Both earlier questions are now answered:
+- **GPU:** an RTX 3060 Laptop GPU with 6 GB VRAM.
+- **Planets:** procedural generation.
 
-Default to procedural until told otherwise.
+The planet and atmosphere generation design is in `docs/planets.md`.
 
 ### Architecture decided so far
 
