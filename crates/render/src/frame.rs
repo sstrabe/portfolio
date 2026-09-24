@@ -285,7 +285,7 @@ fn spheres(world: &World, pixel_angle: f64) -> ([SphereUniform; SPHERE_SLOTS], u
         out[n] = SphereUniform {
             center: f3w(vec3::sub(s.pos, obs), t_ret - t_obs),
             vel: f3w(s.vel, b.params.radius),
-            star: [b.params.temperature as f32, b.params.luminosity as f32, 0.0, 0.0],
+            star: [b.params.temperature as f32, b.params.luminosity as f32, i as f32, 0.0],
         };
         n += 1;
     }

@@ -27,6 +27,7 @@
 //! * [`history`]: sampled worldline history with Hermite interpolation.
 //! * [`cluster`]: the N-body star cluster (geodesics + retarded weak-field
 //!   perturbations + 2.5PN radiation reaction).
+//! * [`planets`]: procedural planetary systems on Kepler orbits.
 //! * [`pilot`]: the visitor's accelerated worldline and Fermi–Walker tetrad.
 //! * [`lensing`]: backward null-geodesic tracing and image finding on the
 //!   observer's past light cone.
@@ -45,6 +46,7 @@ pub mod lensing;
 pub mod metric;
 pub mod orbit;
 pub mod pilot;
+pub mod planets;
 pub mod rng;
 pub mod units;
 pub mod vec3;

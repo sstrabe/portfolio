@@ -8,6 +8,10 @@ macro_rules! module {
     };
 }
 
+/// The shared prelude on its own (for renderers that assemble their own
+/// modules on top of it).
+pub const COMMON: &str = include_str!("wgsl/common.wgsl");
+
 /// Full-screen ray tracer: shadow, lensed sky, in-scene station panels.
 pub const SKY: &str = module!("sky_header.wgsl", "common.wgsl", "sky.wgsl");
 /// Compute pass that finds each body's images on the past light cone.

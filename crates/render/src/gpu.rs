@@ -106,6 +106,11 @@ impl Gpu {
             })
             .await
             .map_err(|e| format!("adapter: {e}"))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let info = adapter.get_info();
+            eprintln!("GPU: {} ({:?}, {:?})", info.name, info.backend, info.device_type);
+        }
         let supported = adapter.limits();
         let mut limits = wgpu::Limits::downlevel_defaults().using_resolution(supported.clone());
         let history_bytes = (history_cap as u64 + 1) * bodies as u64 * 32;

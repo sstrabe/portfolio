@@ -4,7 +4,7 @@ use crate::Options;
 use crate::input::{Action, Controls};
 use kerr::units::{AU, SECONDS_PER_M};
 use kerr::vec3;
-use render::{Gpu, Session};
+use render_hq::{Gpu, Session};
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -51,7 +51,7 @@ impl State {
         let instance = crate::instance();
         let surface = instance.create_surface(window.clone()).map_err(|e| format!("surface: {e}"))?;
         let size = window.inner_size();
-        let world = crate::world(o.stars);
+        let world = crate::world(o.stars, o.start)?;
         let (n, cap) = (world.cluster.len() as u32, world.cluster.history.capacity() as u32);
         let gpu = pollster::block_on(Gpu::new(instance, Some(surface), (size.width, size.height), n, cap))?;
         let mut session = Session::new(world, gpu);
@@ -197,7 +197,13 @@ impl ApplicationHandler for App {
                 s.controls.release_all();
                 s.capture_mouse(false);
             }
-            WindowEvent::KeyboardInput { event, .. } => {
+            WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
+                // On focus, Windows reports keys it believes are held as
+                // synthetic presses; stale state there once held a strafe
+                // key down forever. Only real presses count.
+                if is_synthetic && event.state == ElementState::Pressed {
+                    return;
+                }
                 let PhysicalKey::Code(code) = event.physical_key else { return };
                 match s.controls.key(code, event.state == ElementState::Pressed) {
                     Some(Action::Quit) => event_loop.exit(),

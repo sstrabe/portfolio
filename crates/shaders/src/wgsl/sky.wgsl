@@ -25,7 +25,7 @@ struct Panels {
 struct Sphere {
     center: vec4<f32>,  // xyz relative to the observer, emission time
     vel: vec4<f32>,     // coordinate velocity, radius
-    star: vec4<f32>,    // temperature (K), luminosity, unused, unused
+    star: vec4<f32>,    // temperature (K), luminosity, body index, unused
 }
 
 struct Spheres {
