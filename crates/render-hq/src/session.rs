@@ -79,7 +79,10 @@ impl Session {
 
         let sigma = PSF_SIGMA.max(0.6 * pixel_angle);
         let jitter = self.gpu.post.jitter();
-        let flags = if self.gpu.post.wants_narrowband() { HQ_NARROWBAND } else { 0 };
+        let mut flags = if self.gpu.post.wants_narrowband() { HQ_NARROWBAND } else { 0 };
+        if std::env::var_os("KERR_DEBUG_NAN").is_some() {
+            flags |= crate::HQ_DEBUG_NAN;
+        }
         let hq = HqUniforms {
             size: [0, 0, 0, flags],
             view: [jitter[0], jitter[1], self.wall_time as f32, (pixel_angle * pixel_angle) as f32],

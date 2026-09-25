@@ -43,6 +43,8 @@ pub struct HqUniforms {
 /// `HqUniforms::size[3]` flag: the trace also writes the narrowband bins
 /// (mirrors `HQ_NARROWBAND` in `hq_common.wgsl`).
 pub const HQ_NARROWBAND: u32 = 1;
+/// `HqUniforms::size[3]` flag: mark non-finite pixels (KERR_DEBUG_NAN).
+pub const HQ_DEBUG_NAN: u32 = 2;
 
 /// What features see when they update for a frame.
 pub struct FrameContext<'a> {

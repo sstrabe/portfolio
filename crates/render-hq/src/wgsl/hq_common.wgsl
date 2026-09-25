@@ -23,6 +23,7 @@ struct HqFrame {
 
 // `hq.size.w` flags.
 const HQ_NARROWBAND: u32 = 1u;  // the trace also writes the narrowband bins
+const HQ_DEBUG_NAN: u32 = 2u;   // mark non-finite pixels in magenta
 
 // A nearby star close enough to show a disc (far field, Kerr traced).
 struct Sphere {

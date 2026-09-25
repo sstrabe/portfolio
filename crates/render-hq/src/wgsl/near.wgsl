@@ -207,6 +207,33 @@ struct Hit {
 
 const MAX_PLANETS_PER_SYSTEM: u32 = 8u;
 
+// Radiance at direction d from a sub-pixel planet: flux
+// E_sun p (R/r)² Φ(α) (Lambert sphere phase, geometric albedo p) spread as
+// a Gaussian of the pixel's width; faded out as the disc gets resolved.
+fn planet_glint_point(sys: StarSystem, p: Planet, d: vec3<f32>, fp: f32) -> Spectrum {
+    let c = p.centre.xyz;
+    let r = length(c);
+    let ang_radius = p.centre.w / max(r, 1.0);
+    let resolved = smoothstep(0.3, 1.0, ang_radius / fp);
+    if (resolved >= 1.0) {
+        return spec(0.0);
+    }
+    let dir = c / r;
+    let cos_t = dot(d, dir);
+    let s2 = fp * fp;
+    let t2 = 2.0 * (1.0 - cos_t);
+    if (t2 > 16.0 * s2) {
+        return spec(0.0);
+    }
+    let sun = sun_light(sys, p);
+    // Phase angle at the planet between the star and the observer.
+    let alpha = acos(clamp(dot(sun.dir, -dir), -1.0, 1.0));
+    let phase = (sin(alpha) + (PI - alpha) * cos(alpha)) / PI;
+    let albedo = select(0.3, 0.5, p.ids.x == KIND_GAS_GIANT || p.ids.x == KIND_ICE_GIANT || p.ids.x == KIND_ICE);
+    let flux = albedo * ang_radius * ang_radius * phase * (1.0 - resolved);
+    return spec_scale(sun.irradiance, flux * exp(-0.5 * t2 / s2) / (TAU * s2));
+}
+
 // Everything of one system along the rest-frame ray direction d.
 fn system_trace(sys: StarSystem, d: vec3<f32>, fp: f32) -> Hit {
     var out: Hit;
@@ -246,6 +273,14 @@ fn system_trace(sys: StarSystem, d: vec3<f32>, fp: f32) -> Hit {
         order[j] = first + i;
         entry[j] = span.x;
         count++;
+    }
+
+    // Planets smaller than the pixel: their reflected sunlight as a point
+    // source spread over the footprint (energy conserving), so from afar a
+    // giant shows as a bright star and an Earth as a faint one.
+    for (var i = 0u; i < n; i++) {
+        let g = planet_glint_point(sys, planets[first + i], d, fp);
+        out.m.L = spec_add(out.m.L, g);
     }
 
     var limit = sigma_star;

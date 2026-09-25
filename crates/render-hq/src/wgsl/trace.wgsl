@@ -76,7 +76,16 @@ fn cs_trace(
         far_l = spec_fma(far.m.T, far_sky(far, footprint(li, lid.xy, far.dir)), far_l);
     }
     let total = spec_fma(near.m.T, far_l, near.m.L);
-    textureStore(hdr_out, gid.xy, vec4<f32>(spec_to_rgb(total), spec_mean(near.m.T)));
+    var rgb = spec_to_rgb(total);
+    var alpha = spec_mean(near.m.T);
+    // One non-finite pixel would spread over the whole frame through the
+    // temporal accumulation and the FFT: show it as magenta instead
+    // (KERR_DEBUG_NAN) or black.
+    if (!all(abs(rgb) < vec3<f32>(3.0e38)) || !(abs(alpha) < 3.0e38)) {
+        rgb = select(vec3<f32>(0.0), vec3<f32>(1e3, 0.0, 1e3), (hq.size.w & HQ_DEBUG_NAN) != 0u);
+        alpha = 0.0;
+    }
+    textureStore(hdr_out, gid.xy, vec4<f32>(rgb, alpha));
     if ((hq.size.w & HQ_NARROWBAND) != 0u) {
         // Bins 11 (665–690 nm), 10 (640–665 nm), 4 (490–515 nm).
         textureStore(nb_out, gid.xy, vec4<f32>(total.c.w, total.c.z, total.b.x, 0.0));

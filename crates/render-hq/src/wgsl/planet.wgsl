@@ -416,7 +416,7 @@ fn planet_surface_radiance(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLi
         let mu0 = max(dot(up, sun.dir), 0.0);
         let mu = max(dot(up, view), 1e-3);
         let k = 0.8;
-        let minnaert = pow(mu0 * mu, k - 1.0) * mu0;
+        let minnaert = pow(max(mu0 * mu, 1e-4), k - 1.0) * mu0;
         return spec_mul(a, spec_add(spec_scale(e_sun, minnaert / PI), spec_scale(e_sky, 1.0 / PI)));
     }
     let tp = planet_terrain(p);
