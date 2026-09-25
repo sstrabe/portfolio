@@ -109,7 +109,8 @@ fn terrain_surface_hit(p: Planet, o: vec3<f32>, dir: vec3<f32>, u_max: f32, fp: 
     let land = hit.kind != RAY_QUERY_INTERSECTION_NONE;
     let u_land = select(3.0e38, hit.t, land);
     let u = min(u_land, u_sea);
-    if (u > u_max) {
+    // Neither met (u_max can be unbounded for rays passing the planet).
+    if (u >= 3.0e38 || u > u_max) {
         return h;
     }
     h.hit = true;
