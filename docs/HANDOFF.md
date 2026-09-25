@@ -1,345 +1,228 @@
 # Handoff: Kerr Nucleus
 
-This is a snapshot for the next working session, which runs on the owner's
-laptop so the app can be tested in a real window. Read it together with
-`README.md` (how to build and run) and `docs/physics.md` (what is simulated).
+A snapshot for the next working session. Read it with `README.md` (how to
+build and run), `docs/physics.md` (what is simulated) and `docs/planets.md`
+(the planet and atmosphere design).
 
-- **Branch:** `claude/kerr-spacetime-portfolio-safh9l`. It is the only
-  branch on the remote. There is no `main`, so a PR can't be opened yet.
-  Keep pushing to this branch.
-- **Last commit at handoff:** `c7ce9a1` ("Start facing prograde and warn
-  before diving into the hole").
-- **CI:** green on every pushed commit:
-  - fmt, clippy (native and wasm), tests;
-  - web build;
-  - desktop builds for Linux, Windows and macOS, uploaded as
-    `kerr-nucleus-<OS>` artifacts.
+- **Branch:** `claude/kerr-spacetime-portfolio-safh9l`, the only branch on
+  the remote. There is no `main`, so a PR can't be opened yet.
+- **Not pushed.** Everything since `1f52fe5` (the planets design doc) is
+  committed locally on the laptop only: `git push` fails with a 403 because
+  git there authenticates as another GitHub account (`CanineData`). Once the
+  owner fixes the credentials, push, and check CI (it hasn't run on any of
+  this work).
+- **Machine:** Windows 11 laptop, RTX 3060 Laptop GPU (6 GB) plus an Intel
+  iGPU; wgpu picks the RTX on Vulkan. `cargo` is not on PATH in new shells:
+  use `$HOME/.cargo/bin`.
 
 ---
 
 ## 1. What the project is
 
-It started as an interactive portfolio set inside a relativistic galactic
-nucleus, and grew a standalone desktop app. It has two front ends over one
-physics core and one renderer.
+An interactive portfolio set inside a relativistic galactic nucleus, and a
+standalone desktop flight sim over the same physics.
 
 | Front end | What it is | Portfolio content |
 | --- | --- | --- |
-| **Web** (`web/` plus `crates/engine`, Rust → Wasm on WebGPU) | The original portfolio. Stations on real orbits carry project cards you can dock with. A plain HTML fallback is prerendered. | Yes. Placeholder content lives in `web/src/content/portfolio.ts`. |
-| **Desktop** (`crates/desktop`, binary `kerr-nucleus`, wgpu on Vulkan / Metal / DX12) | A flight sim at the real scale of Sagittarius A\* | **None, by explicit request.** Keep it that way. |
+| **Web** (`web/` plus `crates/engine`, Rust → Wasm on WebGPU, renderer `crates/render`) | The original portfolio: stations on real orbits carry project cards you can dock with. | Yes (placeholders in `web/src/content/portfolio.ts`). |
+| **Desktop** (`crates/desktop`, binary `kerr-nucleus`, renderer `crates/render-hq`) | A flight sim at the real scale of Sagittarius A\*, with planets, atmospheres, nebulae and a ship. | **None, by explicit request.** Keep it that way. |
 
-**The owner's current priority is desktop visual quality.** The owner says
-the web version "will be limited of course".
+**The owner's priority is desktop visual quality.** Reference images: an
+Earth limb from orbit (sun starburst, lens ghosts, blue limb, ocean glint,
+clouds) and the Hubble Crab Nebula.
 
-### Physics (crate `kerr`, pure Rust, f64)
+### Physics (crate `kerr`, f64)
 
-- **The hole:** the Kerr metric in Cartesian Kerr–Schild form. Analytic
-  gradients are checked against dual numbers.
-- **Stars:** every star follows an exact geodesic, integrated in Hamiltonian
-  form with an adaptive DOPRI5 solver.
-- **Perturbations**, applied as 4-forces:
-  - weak mutual pulls between stars, evaluated at the retarded time and
-    extrapolated with the source's velocity;
-  - 2.5PN radiation reaction on the compact objects.
-- **The pilot:**
-  - thrust is a proper acceleration, with a Fermi–Walker-transported frame;
-  - the simulation clock is the pilot's proper time;
-  - a "clock limiter" caps the coordinate time simulated per frame.
-- **Image finding:** backward null geodesics with Newton iteration find
-  each body's direct image and its image from around the far side of the
-  hole, with lensing magnification and the redshift g.
-- **`units.rs`:** Sgr A\* units, where M = 21.2 s = 6.4 × 10⁶ km and
-  1 AU = 23.56 M. It also converts apparent magnitude to flux.
-- **`WorldConfig::sgr_a`**, the desktop world:
-  - 1,500 physical stars: Salpeter masses from 0.5 to 40 M☉,
-    main-sequence and giant radii, luminosities and temperatures;
-  - 8 compact objects;
-  - star orbits from 100 to 20,000 AU; the pilot starts at 800 AU;
-  - time scale 1000× real time; exposure adapts like an eye.
+- Kerr metric in Kerr–Schild form; stars on exact geodesics (DOPRI5) with
+  retarded weak-field pulls and 2.5PN radiation reaction.
+- The pilot: proper acceleration, Fermi–Walker frame, own proper time as the
+  clock, clock limiter.
+- `units.rs`: M = 21.2 s = 6.35e6 km, 1 AU = 23.56 M, 1 pc = 4.86e6 M.
+- **`planets.rs`:** planetary systems generated on demand per star
+  (deterministic in the star's slot and generation): kinds, Kepler orbits
+  inside the Hill sphere around the hole, atmospheres, clouds, rings, wind.
+- **`local.rs`:** Newtonian gravity of the nearest star and its planets on
+  the ship (a 4-force orthogonal to u), landing, orbit autopilot, throttle,
+  warp cap. See `docs/physics.md`.
 
-### Rendering (crate `render`, shaders in crate `shaders`)
+### The desktop renderer (`crates/render-hq`)
 
-`render` is shared by web and desktop. Per frame:
+Per frame (`gpu.rs`): feature pre-passes → `images` compute (shared with the
+web: every body's lensed point images) → `trace` compute (one invocation per
+pixel) → post (TAA, splats, FFT optics, exposure, AgX).
 
-1. **`images` compute pass:** finds each body's images on the past light
-   cone, reading the worldline history mirrored to the GPU.
-2. **`sky` pass:** a per-pixel backward null geodesic, integrated with f32
-   RK4 relative to the observer. It draws:
-   - the horizon;
-   - the procedural lensed galaxy;
-   - station panels (web only);
-   - up to 16 nearby stars as ray-traced discs.
-3. **`composite` pass:** ACES tone mapping and upscaling, then the
-   point-spread sprites for body images.
+The trace, front to back (`wgsl/trace.wgsl`):
+1. **The ship** (`ship.wgsl`, `ship/`): a procedural mesh traced through a
+   software BVH, physically based materials, shadows, chase camera (`V`).
+2. **The near field** (`near.wgsl`, `near.rs`): each nearby star system in its
+   own rest frame, reached by a pure boost of the pixel ray (exact aberration
+   and Doppler). Planet surfaces (`planet.wgsl`, `terrain.wgsl`), atmospheres
+   and clouds (`atmosphere.wgsl`, `atmo_*.wgsl`, `clouds.wgsl`,
+   `cloud_gen.wgsl`), rings, sub-pixel planets as points.
+3. **The far field** (`far.wgsl`): the Kerr geodesic, with the lensing hook
+   (`lens.wgsl`: the cluster's stellar-mass holes) and nebulae
+   (`nebula.wgsl`, generated by `nebula_gen.wgsl`, cached from inside the
+   cluster by `nebula_cube.wgsl`), then the procedural galaxy.
 
-`session.rs` runs one frame: step the world, adapt exposure, sync history,
-upload uniforms, render.
+Light is 16 spectral bins, 390–790 nm, placed so Hα, [S II] and [O III] fall
+in separate bins; radiance is physical (W m⁻² sr⁻¹ nm⁻¹). Each feature has
+its own bind group (see `wgsl/hq_common.wgsl`) and its own files. Shader
+assembly is `shaders.rs`; `cargo test -p render-hq` validates every module
+with naga.
+
+Optics (`post.rs`, `optics.rs`, `fft.rs`, `wgsl/{taa,splat,psf,fft,exposure,post}.wgsl`):
+point sources splatted as energy, FFT convolution with the aperture's
+diffraction pattern per wavelength (eye, 7-blade camera, telescope with
+spider), lens ghosts, histogram metering, rod vision, AgX, astro mode with
+the Hubble palette.
 
 ---
 
 ## 2. Working with the owner
 
-- **Style:** they are direct and don't want padding.
-  - Never add "if this is happening to you" or "if you are considering…"
-    paragraphs.
-  - Don't offer things that weren't asked for unless they're the obvious
-    next step.
-- **Sub-agents:** they asked for them to be used to speed up large work.
-- **Realism:** they want realistic scale and physics, and they accept what
-  realism implies (tiny hole from far away, aberration at high γ) as long
-  as it's explained.
-- **Commits:**
-  - End every commit message with:
-    ```
-    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-    Claude-Session: https://claude.ai/code/session_01M3Xv8txLS6qRyBrVrJrzVs
-    ```
-    Replace the session URL if the new session gives different attribution
-    lines.
-  - Don't put model names in commits, PRs or code.
+- **Style:** direct, no padding. No "if this is happening to you"
+  paragraphs. Don't offer things that weren't asked for unless they're the
+  obvious next step.
+- **No parallel sub-agents.** The handoff used to say to use them; seven in
+  parallel exhausted the owner's usage limit twice. Work serially.
+- **Realism:** real scale and physics, with what realism implies explained.
+- **Commits:** end every message with
+  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. No other model
+  names in commits, PRs or code.
 
 ---
 
 ## 3. Build, run, test
 
 ```sh
-# Desktop (the main target now)
 cargo run -p desktop --release
 cargo run -p desktop --release -- --help
-cargo run -p desktop --release -- --headless 1920x1080 --seconds 5 --out shot.png
-cargo run -p desktop --release -- --headless 1280x720 --near-star 8 --out star.png   # disc close-up
-cargo run -p desktop --release -- --headless 1280x720 --burn --seconds 6 --out burn.png  # high-γ view
+# Headless shots (the trace and post are identical to the window's):
+cargo run -p desktop --release -- --headless 1280x720 --seconds 1 --start planet --out shot.png
+cargo run -p desktop --release -- --headless 1280x720 --seconds 1 --start planet:ocean:2000:day --chase --out glint.png
+cargo run -p desktop --release -- --headless 1280x720 --seconds 1 --start planet:ringed:3r:disc --out saturn.png
+cargo run -p desktop --release -- --headless 1280x720 --seconds 1 --look pwn@5 --optics astro --palette hubble --out crab.png
+cargo run -p desktop --release -- --headless 1280x720 --seconds 1 --near-hole 50 --out hole.png
 
-# Checks (all must pass; CI enforces them)
+# Checks (all must pass)
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy -p engine --target wasm32-unknown-unknown -- -D warnings
-cargo test --workspace            # kerr has 34 tests; render and shaders validate layouts and WGSL
-
-# Web
-cd web && npm install && npm run wasm && npm run dev    # needs wasm-bindgen-cli 0.2.128 exactly
+cargo test --workspace --release
 ```
 
-- **Desktop controls:**
-  - Click to capture the mouse. Look is FPS-style (right looks right, down
-    looks down); `Esc` releases and `I` inverts Y.
-  - `W`/`S`, `A`/`D`, `Space`/`C` thrust; arrow keys turn; `Q`/`E` roll.
-  - `Shift` boosts 5×, and `X` brakes to the local rest frame.
-  - `,` / `.` halve or double the time warp (between 1× and 10⁷× real time).
-  - `F11` toggles fullscreen and `Ctrl+Q` quits.
-  - Telemetry goes to the window title: τ, universe time, warp, v or γ, r,
-    nearest star, fps, the clock limiter, and a warning when you're
-    heading into the hole.
-- **`WGPU_BACKEND`** set to `vulkan`, `metal` or `dx12` forces a backend.
-- **Headless testing without a GPU** (how the cloud session tested): use
-  Chromium's SwiftShader Vulkan driver.
-  `VK_ICD_FILENAMES=<chromium dir>/vk_swiftshader_icd.json WGPU_BACKEND=vulkan LD_LIBRARY_PATH=<chromium dir>`.
-  On the laptop you can just run the window.
-- **Web headless check:** `?immersive&debug&headless&noGui=off`. Headless
-  Chromium can't present WebGPU canvases, so this renders offscreen and
-  captures frames. Without the GUI, headless rAF throttling stalls it, hence
-  `noGui=off`.
+- Fast iteration builds: `CARGO_PROFILE_RELEASE_LTO=false
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 cargo build -p desktop --release`
+  (a few seconds instead of a minute).
+- `--start planet[:KIND[:ALTITUDE[:VIEW]]]`: KIND ocean, rocky, desert, ice,
+  lava, gas, icegiant, ringed, any; ALTITUDE in km or radii (`3r`); VIEW
+  dawn, day, limb, nadir, night, disc. The default prefers a temperate ocean
+  world around a Sun-like star.
+- Environment: `KERR_GPU_TIMING=1` (per-pass GPU times after a headless run),
+  `KERR_DEBUG_NAN=1`, `KERR_ATMO=off|noclouds`, `KERR_NEBULAE=0`,
+  `KERR_NEBULA_CUBE=0`, `WGPU_BACKEND=vulkan|dx12`.
+- Keys: see `--help` and the README (flight: `O` orbit autopilot, `Tab`
+  target, `[`/`]` throttle; view: `V` chase camera, `P` optics, `H` Hubble
+  palette, `PageUp`/`PageDown`/`Backspace` exposure).
+
+**Performance** (RTX 3060 Laptop): the window holds 55–67 fps at its default
+size with the adaptive trace resolution (0.5–1) and TAA upscaling. At native
+1080p the trace alone costs ~10 ms in the cluster, ~26–41 ms in low orbit
+(atmosphere + clouds + terrain), ~50–60 ms out among the nebulae (per-pixel
+march). The post chain is ~2 ms.
 
 ---
 
-## 4. Pitfalls already hit (don't repeat them)
+## 4. Pitfalls already hit
 
-- **Cluster step size:** the cluster's DOPRI5 `h_max` must stay huge
-  (1e12). A small `h_max` (it was 40) made the realistic world take more
-  than 10 minutes to build.
-- **Pilot substeps:** size them by curvature and thrust
-  (`0.03 r / uᵗ`, `0.5 / (1 + 0.5 a)`). Too many tiny substeps at γ > 10⁴
-  made γ drift through renormalization rounding. A regression test covers it.
-- **f32 precision:** far from the hole, ray positions are relative to the
-  observer (`abs_pos`). Keep everything near the camera observer-relative.
-- **HDR overflow:** f16 HDR overflows if exposure gain is applied late.
-  Sky adaptation is applied inside the sky shader (`frame.extra.w`).
-- **Moving spheres:** they must be placed at the ray's hit time (iterate),
-  not at a segment's mid-time. Segments can be hundreds of M long.
-- **WGSL:** `meta` is a reserved word.
-- **Web vs native:** the web build can't use native-only wgpu features.
-  Hardware ray queries (`EXPERIMENTAL_RAY_QUERY`) are native only (Vulkan
-  for sure; check wgpu 30.0.1 for DX12/Metal).
-- **`pkill`:** `pkill -f <name>` can kill your own shell. Use a bracket
-  pattern such as `"[k]err-nucleus"`.
-- **Start heading:** the realistic start used to face the hole, so `W` meant
-  diving into it at γ≈100 within about 15 s. It now faces prograde. Keep the
-  dive warning (`Telemetry::impact_in`).
-
----
-
-## 5. Open feedback from the owner
-
-1. **Inverted controls:** reported, then fixed with FPS mouse-look plus the
-   `I` toggle. Which axis felt wrong was never confirmed; ask when they test
-   the window.
-2. **"You can't see what you are":** no ship model or third-person view yet.
-3. **Blurry:** improved (full-resolution start, magnitude-based stars, star
-   discs). The owner said the updated scene "looks better".
-4. **Stars fading when flying straight:** explained as aberration and
-   Doppler at high γ. Exposure now includes Doppler boost.
-5. **Their question about segmenting.** Could the ray tracer skip curvature
-   when a long segment grazes a stellar-mass black hole?
-   - Yes, and currently worse: **light isn't bent by the compact objects at
-     all**. The only lens is Sgr A\*, and step lengths scale with distance
-     from it.
-   - Segment-vs-sphere *hit tests* are exact; only the bending is missing.
-   - The planned fix is local bubbles, below.
+- **Cluster `h_max`** must stay huge (1e12), or building the world takes
+  minutes. **Pilot substeps** sized by curvature and thrust; a regression test
+  covers the high-γ drift.
+- **f32 precision:** keep everything near the camera observer-relative (the
+  near field is built in f64 relative to the observer event, then rounded).
+- **Windows focus:** winit reports keys Windows believes are held as
+  synthetic presses on focus; stale state once held a strafe key forever.
+  Synthetic presses are ignored.
+- **NaN:** one non-finite pixel spreads through TAA and the FFT into a black
+  frame. The trace now writes non-finite pixels as black (magenta with
+  `KERR_DEBUG_NAN=1`); if a view goes black, look for it with that switch.
+- **Static caches and jitter:** the nebula cube map is static, so TAA can't
+  average its sampling; a shared jitter drew voxel planes as straight lines
+  (great circles are straight in a rectilinear view). It uses per-texel
+  jitter and two marches.
+- **WGSL:** `meta` is reserved; `select` doesn't take structs (use
+  `spec_mix`).
+- **Python on this machine** sees `/tmp` as `C:\tmp`, not Git Bash's
+  `/tmp`; use the scratch directory or repo paths.
+- **CRLF:** git warns about LF → CRLF on Windows; harmless.
 
 ---
 
-## 6. The approved plan (not started): make the desktop look like the reference images
+## 5. Open feedback and known limitations
 
-The owner shared two reference images and said **"Do all the things you
-listed"**:
-- **Earth limb from orbit:** sun starburst, lens ghosts, blue atmosphere
-  limb, ocean sun glint, clouds.
-- **The Crab Nebula** (Hubble composite).
+1. **Inverted controls:** FPS mouse-look plus `I`. Which axis felt wrong was
+   never confirmed; ask when the owner flies.
+2. **"You can't see what you are":** done (the ship and `V`).
+3. **Land colours** on ocean worlds lean pinkish-tan; vegetation cover could
+   be greener. Tuning in `planet.wgsl` (`material_ocean_world`).
+4. **Terrain** is the datum sphere with normals from the height field, so
+   mountains don't break the limb's silhouette and don't shadow each other
+   near the terminator. The design (`docs/planets.md` §5) plans sphere
+   tracing close up and RT-core terrain chunks; neither is done. The GPU
+   surface-map pipeline (tectonics, erosion, climate maps) isn't done either:
+   terrain is evaluated per pixel.
+5. **Nebulae** show sampling grain and radial streaks (photoionisation
+   shadows) in places; seen from the cluster in camera or eye mode they are
+   invisible next to the bright stars, which is realistic; astro mode shows
+   them. From among the nebulae the per-pixel march costs 50–60 ms at 1080p.
+6. **Small-hole lensing** bends the galaxy, nebulae and star discs, not the
+   point images of other stars (those come from the Sgr A* image finder).
+7. **Ship:** software BVH only (no hardware ray queries yet); the drive's
+   plasma glow sits deep in the bell and is rarely visible.
+8. **Atmospheres** use the renderer's 16 visible bins, not the design's
+   200–1600 nm range, so a strongly blueshifted flyby loses the UV look.
 
-Both earlier questions are now answered:
-- **GPU:** an RTX 3060 Laptop GPU with 6 GB VRAM.
-- **Planets:** procedural generation.
+---
 
-The planet and atmosphere generation design is in `docs/planets.md`.
+## 6. The plan and its status
 
-### Architecture decided so far
+The owner approved "all the things" for desktop visuals, answered
+"procedural planets, atmospherics, Rayleigh scattering, the whole nine
+yards", and a detailed design followed (`docs/planets.md`). Status:
 
-- **A new native-only renderer crate** (working name `render-hq`) for the
-  desktop. It uses compute passes and reuses `kerr`, the `images` pass and
-  the Kerr WGSL. The web keeps `render` unchanged, so the web stays safe
-  while the desktop uses native features.
-- **Spectral rendering.**
-  - Carry about 32 wavelength bins (380–780 nm, 12.5 nm) through the trace
-    and convert with the CIE colour-matching functions at the end.
-    Narrowband separation of Hα 656 nm from [S II] 672 nm needs that bin
-    width.
-  - A source's spectrum is evaluated at the emitted wavelength
-    λ_e = g·λ_o, and I_λ,obs = g⁵ I_λ,emit(g λ_o).
-  - A blackbody stays analytic. Lines are Gaussians integrated over bins.
-    Smooth spectra such as the atmosphere can use about 8 samples,
-    interpolated.
-- **Local bubbles.**
-  - Near a star system or a small black hole, the Kerr ray hands off to a
-    local tracer in that object's rest frame, built from an orthonormal
-    tetrad at the object and boosted by its 4-velocity. Spacetime there is
-    flat to about 10⁻¹².
-  - The ray returns to the Kerr integrator when it leaves the bubble.
-  - Only a handful of bubbles are relevant per frame (planets are
-    sub-pixel beyond about 1 AU), so they are culled on the CPU and looped
-    over linearly. No BVH is needed for them.
-  - Planets move about 2 Earth radii per AU of light travel, so evaluate
-    their positions at the ray's own time.
-- **Where the RT cores go:**
-  - the ship: primary visibility, shadows and self-reflections;
-  - later, close-range terrain.
+| Item | Status |
+| --- | --- |
+| `render-hq` skeleton: spectral trace, near-field bubbles, per-feature bind groups | done |
+| Optics: energy splats, TAA/upscaling, FFT PSF with spikes and fringes, ghosts, AgX, eye model, histogram exposure, astro/Hubble | done |
+| Planetary systems (physics), flight near planets (gravity, orbits, autopilot, throttle) | done |
+| Surfaces: terrain, oceans with glint, ice/desert/lava, giants' bands and ovals, rings | done (per-pixel terrain; no surface maps, no close-up relief) |
+| Atmospheres: spectral Hillaire LUTs, Rayleigh/Mie/ozone/methane, clouds with shadows | done |
+| Nebulae at real positions, cube-map cache | done |
+| Ship: mesh, chase camera, PBR, shadows | done (software BVH) |
+| Stellar-mass hole lensing | done |
+| RT-core terrain and ship, surface maps, 200–1600 nm atmosphere tables, presets (Mars, Venus, Titan, Jupiter, Neptune) | not started |
 
-  Use wgpu ray queries on Vulkan (plus DX12/Metal if wgpu 30 supports them),
-  with a small software BVH in WGSL as fallback. The ship moves with the
-  camera, so it has no aberration and plain perspective is exact for it.
-  Stars, planets, atmospheres and nebulae are analytic or volumetric and
-  don't need the RT cores.
-- **Bind groups:** one per feature to limit merge conflicts between
-  parallel agents:
-  - 0: frame, history, images, spectra;
-  - 1: bubbles, planets and atmosphere LUTs;
-  - 2: nebula volumes;
-  - 3: ship and acceleration structure.
-
-  Native can raise the bind-group limit if needed.
-
-### Work items
-
-1. **Optics and post-processing.** This is the biggest visible win, so do
-   it first.
-   - Star images and background stars become energy splatted at sub-pixel
-     positions instead of glow sprites.
-   - TAA with rotation reprojection and temporal upscaling, plus progressive
-     accumulation when the view is still.
-   - **FFT convolution with a physical point spread function:**
-     - the aperture's diffraction pattern, computed per wavelength (spikes
-       with colour fringes);
-     - a scatter halo;
-     - an energy-conserving normalisation.
-   - Screen-space lens ghosts (aperture-shaped, coating tints).
-   - AgX tone mapping.
-   - An eye model with mesopic/scotopic desaturation of faint light.
-   - An astrophotography mode: exposure time, true colour or the Hubble
-     palette.
-2. **Planetary systems.**
-   - **Physics side (`kerr`):**
-     - some dwarf stars get 1–6 planets on Keplerian orbits in the star's
-       frame;
-     - keep them inside the Hill radius (about 4 AU for 1 M☉ at 1000 AU);
-     - planet types: rocky / ocean-world, desert, ice, lava, and gas giants
-       with optional rings.
-   - **Rendering side:**
-     - terrain height functions;
-     - oceans with Cox–Munk sun glint;
-     - a cloud layer with shadows (volumetric clouds up close later);
-     - banded gas giants and ring shadows.
-3. **Atmospheres.** Use the Hillaire 2020 lookup tables: transmittance,
-   multi-scattering, sky-view and aerial perspective. Include Rayleigh
-   (λ⁻⁴), Mie and ozone, with parameters per planet type. From space, ray
-   march the atmosphere using the lookup tables.
-4. **Nebulae.**
-   - Volumes stored as 3D textures of about 256³ (Hα, [O III], [S II]/[N II],
-     dust) and generated procedurally on the GPU:
-     - a shell with Rayleigh–Taylor fingers;
-     - domain-warped ridged noise;
-     - extra detail added while ray marching.
-   - A synchrotron continuum, a pulsar, and line widths from the expansion
-     speed.
-   - **Placement at real positions:**
-     - the Minispiral (Sgr A West);
-     - the dark dusty circumnuclear disk (CND, 1.5–4 pc);
-     - Sgr A East (a real supernova remnant, about 7 × 9 pc);
-     - a Crab-like pulsar wind nebula as a showcase (fictional).
-
-     All of these lie beyond the current 0.1 pc cluster, so the world
-     extends outward.
-   - The eye sees these faint. The camera mode shows the Hubble look.
-5. **Your ship.** A procedural mesh, a third-person chase camera (`V`),
-   physically based materials, lighting from the brightest image sources
-   (from the `images` buffer), and ray-query shadows.
-6. **Stellar-mass black hole lensing.** Local bubbles with their own null
-   geodesic integration. The bubble radius must make the deflection left
-   outside it sub-pixel (about 1 M for 10 M☉); the smooth option is a
-   thin-lens kick outside the bubble.
-
-### Suggested order and parallelisation
-
-- **You:** first, the `render-hq` skeleton:
-  - the compute trace loop with hook functions in separate WGSL files;
-  - the spectral accumulator;
-  - the bubble hand-off;
-  - bind-group ownership as above;
-  - desktop switched over to the new crate.
-- **Then parallel agents in worktrees:**
-  - A: optics and post-processing;
-  - B: nebulae;
-  - C: planetary systems (physics and surfaces);
-  - D: atmospheres;
-  - E: ship and RT;
-  - F: small-black-hole lensing.
-
-  Merge each in turn and run the full check suite before every push.
-- **Test in the window on the laptop** after each merge. The owner will
-  judge by eye.
+Suggested next steps, in order: fly it in the window with the owner and
+collect feedback; push once credentials work and watch CI (it builds and
+runs tests in debug; nothing there needs a GPU); then terrain relief close
+up. Note `render-hq` requires `FLOAT32_FILTERABLE` and `FLOAT32_BLENDABLE`:
+fine on desktop GPUs, but a software adapter without them fails to start.
 
 ---
 
 ## 7. Repo map
 
 ```
-crates/kerr      physics core (metric, geodesic, integrate, orbit, history, cluster,
-                 pilot, lensing, world, units, rng, dual, vec3)
-crates/shaders   WGSL: common, sky(_header), images, history, sprites, composite
-crates/render    gpu.rs (wgpu setup/passes), frame.rs (uniform building, spheres,
-                 exposure), session.rs (per-frame loop)
-crates/engine    wasm-bindgen wrapper for the web
-crates/desktop   main.rs (options), app.rs (winit window, title HUD), input.rs, headless.rs
-web/             Vite + TS; src/flags.ts (noGui flag, default on), src/immersive/*,
-                 src/content/portfolio.ts
-docs/            physics.md, this file
-.github/workflows/ci.yml
+crates/kerr        physics core (metric, geodesic, integrate, orbit, history, cluster,
+                   pilot, lensing, world, units, planets, local, rng, dual, vec3)
+crates/shaders     WGSL shared with the web: common, sky, images, history, sprites, composite
+crates/render      web renderer; frame.rs (uniform building) is shared with render-hq
+crates/render-hq   desktop renderer: gpu.rs, session.rs, near.rs, atmosphere.rs, nebula(.rs|/),
+                   ship/, lens.rs, post.rs, optics.rs, fft.rs, spectrum.rs, profile.rs,
+                   shaders.rs, wgsl/
+crates/engine      wasm-bindgen wrapper for the web
+crates/desktop     main.rs (options), app.rs (window, keys), input.rs, hud.rs (title
+                   telemetry), start.rs (--start, --look), headless.rs
+web/               Vite + TS front end
+docs/              physics.md, planets.md, this file
 ```

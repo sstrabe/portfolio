@@ -24,12 +24,16 @@ instead.
 ```
 crates/kerr      Physics core (pure Rust, tested natively)
 crates/shaders   WGSL sources, validated natively with naga
-crates/render    wgpu renderer + per-frame session, shared by web and desktop
+crates/render    wgpu renderer + per-frame session for the web (its frame
+                 building is shared with the desktop)
+crates/render-hq The desktop's spectral compute renderer: planets, atmospheres,
+                 nebulae, the ship, small-hole lensing, physical optics
 crates/engine    wasm-bindgen front end for the web page
 crates/desktop   Native desktop app (no portfolio content)
 web/             Vite + TypeScript: content, plain page, immersive UI
 scripts/         build-wasm.sh
 docs/physics.md  What is simulated, how, and which parts are approximations
+docs/planets.md  Design of the planets and atmospheres
 ```
 
 ### How the pieces fit
@@ -96,8 +100,9 @@ visitor prefers reduced motion or last chose the plain version.
 ## Desktop app
 
 `crates/desktop` builds `kerr-nucleus`. It's a native window with the same
-physics and renderer on Vulkan, Metal or DX12, set at Sagittarius A*'s real
-scale. It has no stations or portfolio content.
+physics on Vulkan, Metal or DX12, set at Sagittarius A*'s real scale, drawn
+by its own renderer (`crates/render-hq`). It has no stations or portfolio
+content.
 
 - **The hole:** 4.3 million solar masses. One `M` of time is 21 s, and 1 AU is
   23.6 M.
@@ -105,10 +110,18 @@ scale. It has no stations or portfolio content.
   have Salpeter masses, main-sequence and red-giant radii, luminosities and
   temperatures, plus stellar-mass black holes. Close stars are ray traced as
   limb-darkened discs with granulation; distant ones are points.
-- **What you see:** brightness is physical (apparent magnitude), with the
-  exposure adapting to the brightest stars in view the way an eye does. From
-  most places the hole itself is smaller than a pixel. You find it by the
-  lensing of the stars behind it, or by flying in.
+- **Planets:** most dwarf stars have 1–6 procedural planets (rocky, ocean,
+  desert, ice, lava, gas and ice giants, some with rings) on Kepler orbits,
+  with terrain, oceans, spectral atmospheres and clouds.
+- **Nebulae:** the Minispiral, the circumnuclear disk, Sgr A East and a
+  Crab-like pulsar wind nebula, at their real places and brightnesses.
+- **What you see:** light is carried in 16 wavelength bins, so Doppler shifts,
+  Rayleigh scattering and emission lines are exact. Brightness is physical;
+  a camera (or eye, or telescope) model turns it into an image, with
+  diffraction spikes, lens ghosts and exposure that adapts to the scene. From
+  most places Sgr A* itself is smaller than a pixel: you find it by the
+  lensing of what's behind it, or by flying in. The cluster's stellar-mass
+  holes lens too.
 - **Travel:** distances are real and the speed limit is `c`. Accelerate to
   high γ and time dilation makes the trips short in ship time. Your clock
   drives the simulation, and `,` / `.` warp it. It starts at 1000× real time.
@@ -117,6 +130,10 @@ scale. It has no stations or portfolio content.
 cargo run -p desktop --release                  # window
 cargo run -p desktop --release -- --help        # options
 cargo run -p desktop --release -- --headless 1920x1080 --seconds 5 --out shot.png
+cargo run -p desktop --release -- --start planet --chase          # in orbit, ship in view
+cargo run -p desktop --release -- --start planet:ringed:3r:disc   # a ringed giant
+cargo run -p desktop --release -- --look pwn@5 --optics astro --palette hubble
+cargo run -p desktop --release -- --headless 1280x720 --near-hole 50 --out hole.png
 ```
 
 Controls:
@@ -133,6 +150,10 @@ Controls:
   takes over. `Tab` targets the next planet of the system.
 - `,` / `.` halve or double the time warp. Near a body it is capped so an
   orbit takes at least 5 s.
+- `V` switches between first person and the chase camera.
+- `P` cycles the optics: eye, camera, astrograph (telescope). `H` toggles
+  the Hubble palette. `PageUp` / `PageDown` change the exposure by a stop,
+  `Backspace` resets it.
 - `F11` toggles fullscreen and `Ctrl+Q` quits.
 
 Stars and planets pull on the ship (Newtonian gravity on top of the Kerr
@@ -146,11 +167,15 @@ to pick a backend. CI builds binaries for Linux, Windows and macOS as
 workflow artifacts.
 
 **RT cores.** The desktop app doesn't use hardware ray tracing yet. The light
-paths are curved and are integrated step by step on the shader cores. Each
-step is a short straight segment, so geometry could be tested against it with
-RT-core ray queries. That becomes worthwhile once the world has triangle
-meshes. Spheres such as stars (and later planets and atmospheres) are cheaper
-to test analytically.
+paths are curved and are integrated step by step on the shader cores; stars,
+planets and atmospheres are tested analytically. The ship is the one triangle
+mesh, traced through a software BVH; hardware ray queries for it are a
+possible next step.
+
+Environment switches for checking the renderer: `KERR_GPU_TIMING=1` prints
+per-pass GPU times after a headless run, `KERR_DEBUG_NAN=1` marks non-finite
+pixels in magenta, `KERR_ATMO=off|noclouds`, `KERR_NEBULAE=0` and
+`KERR_NEBULA_CUBE=0` turn features off.
 
 ## Controls
 
