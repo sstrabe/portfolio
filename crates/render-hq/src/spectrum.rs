@@ -59,6 +59,11 @@ pub fn xyz_weights() -> [[f64; 3]; BINS] {
     w
 }
 
+/// CIE XYZ → linear sRGB.
+pub fn xyz_to_rgb(v: [f64; 3]) -> [f64; 3] {
+    XYZ_TO_RGB.map(|row| row[0] * v[0] + row[1] * v[1] + row[2] * v[2])
+}
+
 /// Per-bin weights giving linear sRGB directly (possibly negative for
 /// saturated wavelengths, as sRGB cannot show them).
 pub fn rgb_weights() -> [[f64; 3]; BINS] {

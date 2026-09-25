@@ -10,11 +10,14 @@
 //! which bind group belongs to which feature.
 
 pub mod atmosphere;
+pub mod fft;
 pub mod gpu;
 pub mod lens;
 pub mod near;
 pub mod nebula;
+pub mod optics;
 pub mod post;
+pub mod profile;
 pub mod session;
 pub mod shaders;
 pub mod ship;
@@ -36,6 +39,10 @@ pub struct HqUniforms {
     pub units: [f32; 4],
     pub rgb: [[f32; 4]; 12],
 }
+
+/// `HqUniforms::size[3]` flag: the trace also writes the narrowband bins
+/// (mirrors `HQ_NARROWBAND` in `hq_common.wgsl`).
+pub const HQ_NARROWBAND: u32 = 1;
 
 /// What features see when they update for a frame.
 pub struct FrameContext<'a> {

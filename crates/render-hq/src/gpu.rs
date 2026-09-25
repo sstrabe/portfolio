@@ -4,8 +4,9 @@
 //! 2. `images` compute: every body's lensed images on the past light cone
 //!    (shared with the web renderer),
 //! 3. `trace` compute: per-pixel spectral ray tracing into the HDR target,
-//! 4. post: point sources splatted into the HDR target, then optics, tone
-//!    mapping and upscaling to the output.
+//! 4. post (`post.rs`): temporal accumulation and upscaling, point sources,
+//!    lens ghosts, the FFT convolution with the point-spread function,
+//!    metering, the eye model and tone mapping, at the output resolution.
 
 use crate::atmosphere::Atmospheres;
 use crate::lens::Lensing;
@@ -42,7 +43,6 @@ enum Capture {
 struct Hdr {
     width: u32,
     height: u32,
-    view: wgpu::TextureView,
     core_bg: wgpu::BindGroup,
 }
 
@@ -77,17 +77,6 @@ pub struct Gpu {
 
     hdr: Option<Hdr>,
     capture: Arc<Mutex<Capture>>,
-    timing: Option<TraceTiming>,
-}
-
-/// GPU timestamps around the trace pass (profiling aid).
-struct TraceTiming {
-    queries: wgpu::QuerySet,
-    resolve: wgpu::Buffer,
-    /// Trace pass durations, ms.
-    samples: Arc<Mutex<Vec<f64>>>,
-    /// Nanoseconds per timestamp tick.
-    period: f32,
 }
 
 fn offscreen_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
@@ -146,11 +135,26 @@ impl Gpu {
         limits.max_storage_textures_per_shader_stage = supported.max_storage_textures_per_shader_stage;
         limits.max_sampled_textures_per_shader_stage = supported.max_sampled_textures_per_shader_stage;
         limits.max_uniform_buffers_per_shader_stage = supported.max_uniform_buffers_per_shader_stage;
+        // The FFT keeps a 2048-point row (or two 1024-point columns) of two
+        // complex numbers per point in workgroup memory.
+        const FFT_WORKGROUP_BYTES: u32 = 2048 * 16 + 1024;
+        if supported.max_compute_workgroup_storage_size < FFT_WORKGROUP_BYTES {
+            return Err(format!(
+                "the GPU offers {} bytes of workgroup memory ({FFT_WORKGROUP_BYTES} needed)",
+                supported.max_compute_workgroup_storage_size
+            ));
+        }
+        limits.max_compute_workgroup_storage_size = supported.max_compute_workgroup_storage_size;
 
+        let timing = if crate::profile::wanted() {
+            adapter.features() & wgpu::Features::TIMESTAMP_QUERY
+        } else {
+            wgpu::Features::empty()
+        };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("kerr hq"),
-                required_features: REQUIRED_FEATURES | (adapter.features() & wgpu::Features::TIMESTAMP_QUERY),
+                required_features: REQUIRED_FEATURES | timing,
                 required_limits: limits,
                 ..Default::default()
             })
@@ -225,22 +229,25 @@ impl Gpu {
             },
             count: None,
         };
+        let storage_image = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::WriteOnly,
+                format: HDR_FORMAT,
+                view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            count: None,
+        };
         let core_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("trace core"),
             entries: &[
                 uniform_entry(0),
                 uniform_entry(1),
                 uniform_entry(2),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: HDR_FORMAT,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
+                storage_image(3),
+                // Narrowband bins for the Hubble palette (`post_common.wgsl`).
+                storage_image(4),
             ],
         });
         let near = NearField::new(&device);
@@ -271,6 +278,7 @@ impl Gpu {
         });
         let post = Post::new(
             &device,
+            &queue,
             out_format,
             &post::Shared { frame: &frame_buf, hq: &hq_buf, images: &image_buf, meta: &meta_buf },
             bodies,
@@ -304,36 +312,7 @@ impl Gpu {
             post,
             hdr: None,
             capture: Arc::default(),
-            timing: None,
         })
-    }
-
-    /// Local profiling aid: time the trace pass (KERR_GPU_TIMING=1).
-    pub fn enable_timing(&mut self) {
-        if !self.device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
-            return;
-        }
-        let qs = self.device.create_query_set(&wgpu::QuerySetDescriptor {
-            label: None,
-            ty: wgpu::QueryType::Timestamp,
-            count: 2,
-        });
-        let resolve = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: 16,
-            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        self.timing = Some(TraceTiming {
-            queries: qs,
-            resolve,
-            samples: Arc::default(),
-            period: self.queue.get_timestamp_period(),
-        });
-    }
-
-    pub fn trace_times(&self) -> Vec<f64> {
-        self.timing.as_ref().map(|t| t.samples.lock().unwrap().clone()).unwrap_or_default()
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -423,19 +402,22 @@ impl Gpu {
         if matches!(&self.hdr, Some(t) if t.width == w && t.height == h) {
             return;
         }
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("hdr"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: HDR_FORMAT,
-            usage: wgpu::TextureUsages::STORAGE_BINDING
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&Default::default());
+        let target = |label| {
+            self.device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: HDR_FORMAT,
+                    usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        };
+        let view = target("hdr");
+        let nb_view = target("narrowband");
         let core_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("trace core"),
             layout: &self.core_layout,
@@ -444,10 +426,12 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 1, resource: self.hq_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: self.sphere_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&nb_view) },
             ],
         });
-        self.post.attach(&self.device, &view);
-        self.hdr = Some(Hdr { width: w, height: h, view, core_bg });
+        let out = self.output_size();
+        self.post.attach(&self.device, &self.queue, &view, &nb_view, (w, h), out);
+        self.hdr = Some(Hdr { width: w, height: h, core_bg });
     }
 
     /// Pick the near field for this frame (before building `HqUniforms`).
@@ -507,14 +491,9 @@ impl Gpu {
             pass.dispatch_workgroups((self.bodies * 2).div_ceil(64), 1, 1);
         }
         {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("trace"),
-                timestamp_writes: self.timing.as_ref().map(|t| wgpu::ComputePassTimestampWrites {
-                    query_set: &t.queries,
-                    beginning_of_pass_write_index: Some(0),
-                    end_of_pass_write_index: Some(1),
-                }),
-            });
+            let timestamp_writes = self.post.timestamps("trace");
+            let mut pass =
+                enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("trace"), timestamp_writes });
             pass.set_pipeline(&self.trace_pipeline);
             pass.set_bind_group(0, &hdr.core_bg, &[]);
             pass.set_bind_group(1, self.near.bind_group(), &[]);
@@ -524,30 +503,11 @@ impl Gpu {
             pass.set_bind_group(5, self.lens.bind_group(), &[]);
             pass.dispatch_workgroups(w.div_ceil(TRACE_TILE), h.div_ceil(TRACE_TILE), 1);
         }
-        if let Some(TraceTiming { queries: qs, resolve, samples, period }) = &self.timing {
-            enc.resolve_query_set(qs, 0..2, resolve, 0);
-            let read = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: 16,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            enc.copy_buffer_to_buffer(resolve, 0, &read, 0, 16);
-            let (samples, period, r2) = (samples.clone(), *period, read.clone());
-            enc.map_buffer_on_submit(&read, wgpu::MapMode::Read, .., move |res| {
-                if res.is_ok() {
-                    if let Ok(d) = r2.slice(..).get_mapped_range() {
-                        let t0 = u64::from_le_bytes(d[0..8].try_into().unwrap());
-                        let t1 = u64::from_le_bytes(d[8..16].try_into().unwrap());
-                        samples.lock().unwrap().push(t1.wrapping_sub(t0) as f64 * period as f64 * 1e-6);
-                    }
-                    r2.unmap();
-                }
-            });
-        }
-        self.post.encode(&mut enc, &hdr.view, &out_view);
+        self.post.encode(&mut enc, &out_view);
         self.encode_capture(&mut enc);
         self.queue.submit([enc.finish()]);
+        // Deliver finished read-backs (exposure) without waiting.
+        let _ = self.device.poll(wgpu::PollType::Poll);
         if let Some(frame) = frame {
             self.queue.present(frame);
         }

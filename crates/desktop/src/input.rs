@@ -28,6 +28,12 @@ pub enum Action {
     OrbitAutopilot,
     /// Target the next planet.
     NextTarget,
+    /// Cycle eye → camera → astrograph.
+    NextOptics,
+    /// Toggle true colour / the Hubble palette.
+    TogglePalette,
+    /// Change the exposure compensation by this many stops (0: reset).
+    Exposure(f64),
 }
 
 #[derive(Default)]
@@ -61,6 +67,11 @@ impl Controls {
             KeyCode::BracketLeft => Some(Action::Throttle(0.1)),
             KeyCode::KeyO => Some(Action::OrbitAutopilot),
             KeyCode::Tab => Some(Action::NextTarget),
+            KeyCode::KeyP => Some(Action::NextOptics),
+            KeyCode::KeyH => Some(Action::TogglePalette),
+            KeyCode::PageUp => Some(Action::Exposure(1.0)),
+            KeyCode::PageDown => Some(Action::Exposure(-1.0)),
+            KeyCode::Backspace => Some(Action::Exposure(0.0)),
             KeyCode::KeyI => {
                 self.invert_y = !self.invert_y;
                 Some(Action::InvertY(self.invert_y))

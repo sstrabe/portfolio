@@ -48,18 +48,49 @@ pub fn atmosphere_tables() -> String {
     s
 }
 
-/// Point sources splatted into the HDR radiance.
+const POST_PRELUDE: &str = wgsl!("post_common.wgsl");
+
+/// Temporal accumulation and upscaling.
+pub fn taa() -> String {
+    assemble(&[POST_PRELUDE, wgsl!("taa.wgsl")])
+}
+
+/// Point sources splatted into the scene, and lens ghosts.
 pub fn splat() -> String {
-    assemble(&[wgsl!("splat.wgsl")])
+    assemble(&[POST_PRELUDE, wgsl!("splat.wgsl")])
 }
 
-/// Optics, tone mapping and upscaling.
+/// The point-spread function's kernel on the convolution grid.
+pub fn psf() -> String {
+    assemble(&[wgsl!("psf.wgsl")])
+}
+
+/// Downsampling, FFT convolution and the luminance histogram.
+pub fn fft() -> String {
+    assemble(&[POST_PRELUDE, wgsl!("fft.wgsl")])
+}
+
+/// Metering and adaptation.
+pub fn exposure() -> String {
+    assemble(&[POST_PRELUDE, wgsl!("exposure.wgsl")])
+}
+
+/// The eye model, tone mapping and display encoding.
 pub fn post() -> String {
-    assemble(&[wgsl!("post.wgsl")])
+    assemble(&[POST_PRELUDE, wgsl!("post.wgsl")])
 }
 
-pub fn all() -> [(&'static str, String); 4] {
-    [("trace", trace()), ("splat", splat()), ("post", post()), ("atmosphere tables", atmosphere_tables())]
+pub fn all() -> [(&'static str, String); 8] {
+    [
+        ("trace", trace()),
+        ("atmosphere tables", atmosphere_tables()),
+        ("taa", taa()),
+        ("splat", splat()),
+        ("psf", psf()),
+        ("fft", fft()),
+        ("exposure", exposure()),
+        ("post", post()),
+    ]
 }
 
 #[cfg(test)]

@@ -57,6 +57,7 @@ impl State {
         let gpu = pollster::block_on(Gpu::new(instance, Some(surface), (size.width, size.height), n, cap))?;
         let mut session = Session::new(world, gpu);
         session.fov_deg = o.fov;
+        session.gpu.post.settings = o.optics;
         let scale = o.scale.unwrap_or(1.0);
         session.gpu.set_render_scale(scale);
         let now = Instant::now();
@@ -259,6 +260,29 @@ impl ApplicationHandler for App {
                             Some(p) => format!("target: {}", hud::planet_name(world, p)),
                             None => "no planet within 2000 AU".into(),
                         };
+                        s.notify(note);
+                    }
+                    Some(Action::NextOptics) => {
+                        let o = &mut s.session.gpu.post.settings;
+                        o.optics = o.optics.next();
+                        let note = format!("optics: {:?}", o.optics).to_lowercase();
+                        s.notify(note);
+                    }
+                    Some(Action::TogglePalette) => {
+                        use render_hq::optics::Palette;
+                        let o = &mut s.session.gpu.post.settings;
+                        o.palette = if o.palette == Palette::True { Palette::Hubble } else { Palette::True };
+                        let note = if o.palette == Palette::Hubble {
+                            "Hubble palette ([S II], Hα, [O III])"
+                        } else {
+                            "true colour"
+                        };
+                        s.notify(note);
+                    }
+                    Some(Action::Exposure(stops)) => {
+                        let o = &mut s.session.gpu.post.settings;
+                        o.ev = if stops == 0.0 { 0.0 } else { o.ev + stops };
+                        let note = format!("exposure {:+.0} EV", o.ev);
                         s.notify(note);
                     }
                     Some(Action::InvertY(on)) => s.notify(if on { "mouse Y inverted" } else { "mouse Y normal" }),

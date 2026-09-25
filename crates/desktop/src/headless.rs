@@ -18,10 +18,8 @@ pub fn run(o: &Options) -> Result<(), String> {
     let gpu = pollster::block_on(Gpu::new(crate::instance(), None, (w, h), n, cap))?;
     let mut s = Session::new(world, gpu);
     s.fov_deg = o.fov;
+    s.gpu.post.settings = o.optics;
     s.gpu.set_render_scale(o.scale.unwrap_or(1.0));
-    if std::env::var_os("KERR_GPU_TIMING").is_some() {
-        s.gpu.enable_timing();
-    }
 
     let mut controls = Controls::default();
     let dt = 1.0 / 60.0;
@@ -42,12 +40,6 @@ pub fn run(o: &Options) -> Result<(), String> {
     s.gpu.request_capture();
     s.frame(dt, &controls.sample(dt));
     s.gpu.wait();
-    let mut times = s.gpu.trace_times();
-    if times.len() > 10 {
-        times.drain(..times.len() / 3);
-        times.sort_by(f64::total_cmp);
-        eprintln!("trace pass: median {:.2} ms, min {:.2} ms", times[times.len() / 2], times[0]);
-    }
     let raw = s.gpu.take_capture().ok_or("capture failed")?;
     let (cw, ch) =
         (u32::from_le_bytes(raw[0..4].try_into().unwrap()), u32::from_le_bytes(raw[4..8].try_into().unwrap()));
@@ -66,6 +58,17 @@ pub fn run(o: &Options) -> Result<(), String> {
         line = format!("AUTOPILOT: {phase} · {line}");
     }
     println!("{line}");
+    for (pass, ms, n) in s.gpu.post.timings() {
+        println!("  {pass:<32} {ms:7.3} ms  ({n} frames)");
+    }
+    let m = s.metering();
+    println!(
+        "exposure {:.3e} per W m⁻² sr⁻¹; metered {:.3e} cd/m², 95th percentile {:.3e} cd/m², fifth star {:.3e} cd/m²",
+        s.exposure(),
+        m.metered,
+        m.p95,
+        m.fifth_star
+    );
     Ok(())
 }
 

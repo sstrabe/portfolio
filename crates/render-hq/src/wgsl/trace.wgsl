@@ -5,10 +5,13 @@
 //   3. the far field (Kerr geodesic, nebulae, the distant sky).
 // Output is linear sRGB radiance (W m⁻² sr⁻¹, CIE weighted) in rgba32float;
 // alpha is the near-field transmittance, so point sources splatted later
-// are hidden behind planets.
+// are hidden behind planets. When `hq.size.w & HQ_NARROWBAND` is set, the
+// three narrowband bins ([S II], Hα, [O III]) also go to `nb_out` for the
+// Hubble palette (`post_common.wgsl`).
 // ---------------------------------------------------------------------------
 
 @group(0) @binding(3) var hdr_out: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(4) var nb_out: texture_storage_2d<rgba32float, write>;
 
 // Escape directions of the workgroup's 8×8 pixels, for the lensed pixel
 // footprint on the sky (a compute shader has no derivatives).
@@ -74,4 +77,8 @@ fn cs_trace(
     }
     let total = spec_fma(near.m.T, far_l, near.m.L);
     textureStore(hdr_out, gid.xy, vec4<f32>(spec_to_rgb(total), spec_mean(near.m.T)));
+    if ((hq.size.w & HQ_NARROWBAND) != 0u) {
+        // Bins 11 (665–690 nm), 10 (640–665 nm), 4 (490–515 nm).
+        textureStore(nb_out, gid.xy, vec4<f32>(total.c.w, total.c.z, total.b.x, 0.0));
+    }
 }
