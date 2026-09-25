@@ -24,10 +24,11 @@ pub struct Pose {
 pub struct ChaseCamera {
     /// Third person (the ship is drawn) or first person (it isn't).
     pub chase: bool,
-    /// Orbit angles (rad): yaw to the left of straight behind, pitch
-    /// above the ship's horizontal plane.
-    pub yaw: f64,
-    pub pitch: f64,
+    /// The direction the camera looks at the orbit centre from, as axes
+    /// (forward, left, up) in the ship frame; it sits behind the centre
+    /// along −forward. Turned about its own axes (a trackball), so every
+    /// direction is reachable and there are no poles to flip over.
+    pub orbit: [V3; 3],
     /// Distance from the orbit centre, m.
     pub distance: f64,
 }
@@ -49,16 +50,23 @@ pub const MAX_DISTANCE: f64 = 400.0;
 
 impl Default for ChaseCamera {
     fn default() -> Self {
-        Self { chase: false, yaw: DEFAULT_YAW, pitch: DEFAULT_PITCH, distance: DEFAULT_DISTANCE }
+        Self { chase: false, orbit: look_axes(DEFAULT_YAW, DEFAULT_PITCH), distance: DEFAULT_DISTANCE }
     }
 }
 
 impl ChaseCamera {
-    /// Turn the orbit by mouse-like deltas (rad), keeping the camera off
-    /// the poles.
+    /// Turn the orbit by mouse-like deltas (rad): yaw about the camera's
+    /// own up (positive turns it left), pitch about its own left (positive
+    /// looks further down). No limits: it goes over the top or underneath
+    /// and on round.
     pub fn orbit(&mut self, d_yaw: f64, d_pitch: f64) {
-        self.yaw = (self.yaw + d_yaw).rem_euclid(std::f64::consts::TAU);
-        self.pitch = (self.pitch + d_pitch).clamp(-1.45, 1.45);
+        let [f, l, u] = self.orbit;
+        let (f, l) = (vec3::rotate(f, u, d_yaw), vec3::rotate(l, u, d_yaw));
+        let f = vec3::rotate(f, l, d_pitch);
+        // Keep the axes orthonormal as small errors add up.
+        let f = vec3::normalize(f);
+        let l = vec3::normalize(vec3::axpy(l, -vec3::dot(l, f), f));
+        self.orbit = [f, l, vec3::cross(f, l)];
     }
 
     /// Scale the distance (e.g. by a scroll wheel).
@@ -67,16 +75,17 @@ impl ChaseCamera {
     }
 
     pub fn reset(&mut self) {
-        (self.yaw, self.pitch, self.distance) = (DEFAULT_YAW, DEFAULT_PITCH, DEFAULT_DISTANCE);
+        (self.orbit, self.distance) = (look_axes(DEFAULT_YAW, DEFAULT_PITCH), DEFAULT_DISTANCE);
     }
 
     pub fn pose(&self) -> Pose {
         if !self.chase {
             return Pose { pos: [0.0; 3], axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
         }
-        let look = look_axes(self.yaw, self.pitch);
-        let pos = vec3::axpy(TARGET, -self.distance, look[0]);
-        Pose { pos, axes: look_axes(self.yaw, self.pitch - LIFT) }
+        let [f, l, u] = self.orbit;
+        let pos = vec3::axpy(TARGET, -self.distance, f);
+        // Tilted up by LIFT about the camera's left.
+        Pose { pos, axes: [vec3::rotate(f, l, -LIFT), l, vec3::rotate(u, l, -LIFT)] }
     }
 
     /// The pilot's tetrad turned onto the camera's axes: e₀ is kept and
@@ -171,6 +180,37 @@ mod tests {
         // Hull points off the plane: within a fraction of the camera's turn.
         check([12.0, 0.0, 1.0], 0.2 * 0.06);
         check([-15.0, 3.0, 0.0], 0.2 * 0.06);
+    }
+
+    /// The orbit goes over the top and on round with no limit or flip: a
+    /// full turn in pitch (or yaw) comes back to the start, and the axes
+    /// stay orthonormal and right-handed all the way.
+    #[test]
+    fn orbit_has_no_limits() {
+        let mut cam = ChaseCamera { chase: true, ..Default::default() };
+        let start = cam.orbit;
+        let steps = 400;
+        let mut prev = start;
+        for k in 0..steps {
+            cam.orbit(0.0, std::f64::consts::TAU / steps as f64);
+            let a = cam.orbit;
+            for i in 0..3 {
+                assert!((vec3::norm(a[i]) - 1.0).abs() < 1e-9 && vec3::dot(a[i], a[(i + 1) % 3]).abs() < 1e-9, "{k}");
+            }
+            assert!(vec3::norm(vec3::sub(vec3::cross(a[0], a[1]), a[2])) < 1e-9);
+            // Each step turns the view by the step alone: no jumps.
+            for i in 0..3 {
+                assert!(vec3::norm(vec3::sub(a[i], prev[i])) < 0.02, "{k}");
+            }
+            prev = a;
+        }
+        for i in 0..3 {
+            assert!(vec3::norm(vec3::sub(cam.orbit[i], start[i])) < 1e-6);
+        }
+        for _ in 0..steps {
+            cam.orbit(std::f64::consts::TAU / steps as f64, 0.0);
+        }
+        assert!(vec3::norm(vec3::sub(cam.orbit[0], start[0])) < 1e-6);
     }
 
     /// The default chase view is behind and above the ship, looking

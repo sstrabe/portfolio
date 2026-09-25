@@ -218,14 +218,15 @@ march). The post chain is ~2 ms.
    right above the ground will need a planet-relative physics state.
 10. **Atmospheres** use the renderer's 16 visible bins, not the design's
    200–1600 nm range, so a strongly blueshifted flyby loses the UV look.
-11. **To do (owner, 2026-09-25): "make the camera base rotations off of the
-   orientation of the rocket, not the global axes."** Note: the chase
-   camera's orbit (`ChaseCamera` in `render-hq/src/ship/camera.rs`, right
-   drag) is already in the ship frame (yaw about the ship's up axis, pitch
-   from its horizontal plane, and the pilot tetrad turns with the ship);
-   the map view (`desktop/src/map.rs`) orbits the system's fixed axes.
-   Confirm with the owner which view feels wrong (the map, or orbiting
-   about the rocket's long axis / its current up) before changing it.
+11. **Chase camera (owner, 2026-09-25):** "limits on how far you can turn"
+   and "while moving the camera sometimes flips out". The orbit was yaw and
+   pitch about the ship's up axis, pitch clamped at ±83°, so views from
+   above and below were missing, and near the clamp small drags swung the
+   view round. **Fixed:** `ChaseCamera::orbit` is now a trackball (its own
+   forward, left, up in the ship frame, turned about its own axes; no
+   limits, no poles; test `orbit_has_no_limits`). If a flip remains while
+   the ship turns, check SAS (it may take the long way round when a hold
+   target jumps).
 12. **Bug (owner, 2026-09-25): the ship still flickers.** From the owner's
    capture (orbiting the chase camera around the ship near a planet, ~20
    fps): while the camera orbits, the ship's silhouette turns blocky and
