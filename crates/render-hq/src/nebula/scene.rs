@@ -155,6 +155,10 @@ pub struct Optics {
     pub calibrate: Option<(f64, f64)>,
 }
 
+/// Another volume whose gas shadows this one: its index and its density
+/// scale relative to ours.
+pub type Occluder = (usize, f32);
+
 /// One box of voxels and what fills it.
 #[derive(Clone, Debug)]
 pub struct Volume {
@@ -174,7 +178,7 @@ pub struct Volume {
     /// Photoionisation pass parameters (p0 of `gen_light`) and the volume
     /// whose gas also shadows this one, with its density scale relative to
     /// ours.
-    pub light: Option<([f32; 4], Option<(usize, f32)>)>,
+    pub light: Option<([f32; 4], Option<Occluder>)>,
     /// Velocity field parameters (p0, p1; kind in p3.w of `gen_velocity`).
     pub velocity: [[f32; 4]; 2],
     pub optics: Optics,
