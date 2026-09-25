@@ -261,6 +261,56 @@ const HULL_SZ: f64 = 0.92;
 /// Radiator roots, around the x axis from +y towards +z.
 pub const RADIATOR_ANGLES_DEG: [f64; 4] = [30.0, 150.0, 210.0, 330.0];
 
+/// Half extents of an RCS block (along the hull, around it, out), m.
+const RCS_HALF: [f64; 3] = [0.36, 0.28, 0.22];
+/// Length and exit radius of an RCS nozzle, m.
+const NOZZLE_LENGTH: f64 = 0.2;
+const NOZZLE_EXIT_R: f64 = 0.075;
+
+/// One reaction-control nozzle: the centre of its exit (ship-frame metres)
+/// and the direction its exhaust leaves in (the thrust is the opposite).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Nozzle {
+    pub exit: V3,
+    pub dir: V3,
+}
+
+/// Reaction-control blocks: four around the cabin and four around the drive
+/// housing, 45° off the axes. Centre and axes (along the hull, around it,
+/// out).
+fn rcs_blocks() -> Vec<(V3, [V3; 3])> {
+    let mut blocks = Vec::new();
+    for x in [9.2, -16.5] {
+        for k in 0..4 {
+            let phi = (45.0 + 90.0 * k as f64).to_radians();
+            let out = vec3::normalize([0.0, HULL_SY * phi.cos(), HULL_SZ * phi.sin()]);
+            let rim = if x > 0.0 { 3.05 } else { 2.62 };
+            let rho = rim * (HULL_SY * phi.cos()).hypot(HULL_SZ * phi.sin());
+            blocks.push((vec3::axpy([x, 0.0, 0.0], rho + 0.12, out), [X, vec3::cross(X, out), out]));
+        }
+    }
+    blocks
+}
+
+/// The 32 RCS nozzles: each block is a quad, as on Apollo's service
+/// module, with one nozzle facing forward, one aft and one either way
+/// around the hull. Fore and aft blocks together give a couple about every
+/// axis and a push along every axis.
+pub fn rcs_nozzles() -> Vec<Nozzle> {
+    rcs_blocks()
+        .into_iter()
+        .flat_map(|(c, ax)| {
+            [
+                (ax[0], RCS_HALF[0]),
+                (vec3::scale(ax[0], -1.0), RCS_HALF[0]),
+                (ax[1], RCS_HALF[1]),
+                (vec3::scale(ax[1], -1.0), RCS_HALF[1]),
+            ]
+            .map(|(dir, h)| Nozzle { exit: vec3::axpy(c, h + NOZZLE_LENGTH, dir), dir })
+        })
+        .collect()
+}
+
 /// The ship, with baked ambient occlusion and triangles in BVH order.
 pub fn ship() -> (Mesh, Bvh) {
     let mut mesh = geometry();
@@ -384,16 +434,14 @@ fn geometry() -> Mesh {
     b.lathe_creased(&round, &[(exit_x, exit_r), (exit_x, exit_r - skin)], SEG, Bell);
     b.lathe(&round, &[(-18.5, throat - skin), (-18.5, 0.0)], SEG, false, BellInner);
 
-    // Reaction-control thruster blocks, fore and aft.
-    for x in [9.2, -16.5] {
-        for k in 0..4 {
-            let phi = (45.0 + 90.0 * k as f64).to_radians();
-            let dir = vec3::normalize([0.0, HULL_SY * phi.cos(), HULL_SZ * phi.sin()]);
-            let rim = if x > 0.0 { 3.05 } else { 2.62 };
-            let rho = rim * (HULL_SY * phi.cos()).hypot(HULL_SZ * phi.sin());
-            let t = vec3::cross(X, dir);
-            b.cuboid(vec3::axpy([x, 0.0, 0.0], rho + 0.12, dir), [X, t, dir], [0.36, 0.28, 0.22], Metal);
-        }
+    // Reaction-control thruster blocks, fore and aft, with their nozzles.
+    for (c, ax) in rcs_blocks() {
+        b.cuboid(c, ax, RCS_HALF, Metal);
+    }
+    for nz in rcs_nozzles() {
+        let throat = Axis::along(vec3::axpy(nz.exit, -NOZZLE_LENGTH, nz.dir), nz.dir);
+        b.lathe(&throat, &[(NOZZLE_LENGTH, NOZZLE_EXIT_R), (0.0, 0.035)], 12, false, Metal);
+        b.lathe(&throat, &[(NOZZLE_LENGTH, NOZZLE_EXIT_R - 0.012), (0.02, 0.028)], 12, true, Dark);
     }
     // Anti-collision strobes on the drive housing.
     for s in [1.0, -1.0] {
@@ -492,10 +540,21 @@ mod tests {
     #[test]
     fn normals_face_outwards() {
         let (m, _) = ship();
-        let open = m.vertices.iter().filter(|v| v.ao > 0.35).count();
+        // Leave out the RCS nozzles: their insides face their axes and their
+        // throats sit against the blocks.
+        let nozzles = rcs_nozzles();
+        let on_nozzle = |v: &Vertex| {
+            let p = pos(v);
+            nozzles.iter().any(|nz| {
+                let s = vec3::dot(vec3::sub(p, nz.exit), nz.dir).clamp(-NOZZLE_LENGTH, 0.0);
+                vec3::norm(vec3::sub(p, vec3::axpy(nz.exit, s, nz.dir))) < 0.1
+            })
+        };
+        let outer: Vec<_> = m.vertices.iter().filter(|v| !on_nozzle(v)).collect();
+        let open = outer.iter().filter(|v| v.ao > 0.35).count();
         // Parts tucked between the radiators and inside the truss see less
         // (about a fifth of the vertices).
-        assert!(open as f64 > 0.75 * m.vertices.len() as f64, "{open} of {}", m.vertices.len());
+        assert!(open as f64 > 0.75 * outer.len() as f64, "{open} of {}", outer.len());
         // The top of the cabin sees nearly the whole sky.
         let top = m
             .vertices

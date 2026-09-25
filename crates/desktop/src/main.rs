@@ -36,6 +36,8 @@ pub struct Options {
     pub autopilot: bool,
     /// Start with the chase camera (the ship in view).
     pub chase: bool,
+    /// Headless: pitch and translate with the RCS during the flight.
+    pub rcs: bool,
     /// Headless: draw the HUD, the map, the list of controls.
     pub hud: bool,
     pub map: bool,
@@ -77,6 +79,8 @@ OPTIONS:
     --burn              Headless: thrust forward with boost during the flight
     --autopilot         Headless: fly into orbit around the nearest planet (else Sgr A*)
     --chase             Start with the chase camera (the ship in view)
+    --rcs               Headless: pitch down and translate forward on the RCS
+                        (its plumes show while the turn speeds up: --seconds 0.3)
     --hud               Headless: draw the HUD over the shot
     --map               Headless: shoot the map instead
     --help-overlay      Headless: draw the list of controls
@@ -84,7 +88,9 @@ OPTIONS:
 
 CONTROLS (like Kerbal Space Program; F1 shows them in the window):
     W/S pitch (W: nose down), A/D yaw, Q/E roll. The ship turns with
-    inertia; SAS (T) stops it turning, and 1-9 make SAS hold the nose on:
+    inertia (the RCS fires as it speeds up or slows down); SAS (T) stops it
+    turning, and 1-9 (or the buttons left of the navball) make SAS hold the
+    nose on:
     1 attitude, 2 prograde, 3 retrograde, 4 normal, 5 anti-normal,
     6 radial out, 7 radial in, 8 target, 9 anti-target.
     Shift/Ctrl throttle up/down, Z full, X cut. [ / ] divide or multiply
@@ -147,6 +153,7 @@ fn parse() -> Result<Options, String> {
         burn: false,
         autopilot: false,
         chase: false,
+        rcs: false,
         hud: false,
         map: false,
         help: false,
@@ -181,6 +188,7 @@ fn parse() -> Result<Options, String> {
             "--autopilot" => o.autopilot = true,
             "--chase" => o.chase = true,
             "--hud" => o.hud = true,
+            "--rcs" => o.rcs = true,
             "--map" => o.map = true,
             "--help-overlay" => o.help = true,
             "--start" => o.start = value("--start")?.parse()?,

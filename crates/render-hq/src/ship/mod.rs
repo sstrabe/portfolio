@@ -8,6 +8,9 @@
 //! - that planet's sunlight reflected towards the ship: E_sun × albedo ×
 //!   (R_p/d_p)² × the Lambert sphere's phase function;
 //! - a faint skylight from the rest of the cluster.
+//!
+//! The reaction-control thrusters fire for the rotation and translation the
+//! pilot commands ([`Ship::set_rcs`]); the shader draws their plumes.
 
 pub mod bvh;
 pub mod camera;
@@ -24,7 +27,7 @@ pub use camera::ChaseCamera;
 
 /// Mirrors `struct ShipFrame` in `ship.wgsl`.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct ShipFrameGpu {
     cam_pos: [f32; 4],
     cam_x: [f32; 4],
@@ -37,6 +40,11 @@ struct ShipFrameGpu {
     sun: [[f32; 4]; 4],
     planet: [[f32; 4]; 4],
     sky: [[f32; 4]; 4],
+    /// Number of firing nozzles, unused ×3.
+    rcs: [f32; 4],
+    /// Per firing nozzle: exit (m) and strength 0–1, exhaust direction and
+    /// the nozzle's index.
+    jets: [[f32; 4]; 2 * MAX_JETS],
 }
 
 /// Irradiance from the rest of the sky per hemisphere, W m⁻² nm⁻¹: the
@@ -44,6 +52,14 @@ struct ShipFrameGpu {
 const SKY_IRRADIANCE: f64 = 2.0e-4;
 /// Bond albedo assumed for sunlight reflected by a planet.
 const PLANET_ALBEDO: f64 = 0.3;
+/// Most nozzles drawn firing at once (all of them).
+const MAX_JETS: usize = 32;
+/// A plume takes this long to clear after its valve closes, s.
+const JET_FADE_S: f64 = 0.08;
+/// Nozzles firing at less than this share of full thrust stay closed.
+const JET_THRESHOLD: f64 = 0.2;
+/// The ship's centre of mass (ship frame, m): the full propellant tank.
+const CENTRE_OF_MASS: V3 = [-2.5, 0.0, 0.0];
 
 pub struct Ship {
     layout: wgpu::BindGroupLayout,
@@ -54,6 +70,14 @@ pub struct Ship {
     pub camera: ChaseCamera,
     /// Drive power 0–1 for the plasma and radiator glow (set by the session).
     pub power: f64,
+    nozzles: Vec<mesh::Nozzle>,
+    /// Unit torque of each nozzle about the centre of mass, or zero for one
+    /// that pushes through it.
+    torques: Vec<V3>,
+    /// Commanded and drawn strength of each nozzle, 0–1.
+    wanted: Vec<f64>,
+    firing: Vec<f64>,
+    last_wall: Option<f64>,
 }
 
 fn spectrum_rows(s: [f64; spectrum::BINS]) -> [[f32; 4]; 4] {
@@ -100,7 +124,7 @@ impl Ship {
         };
         let uniform = init(
             "ship frame",
-            bytemuck::bytes_of(&ShipFrameGpu::default()),
+            bytemuck::bytes_of(&ShipFrameGpu::zeroed()),
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
         let vertices = init("ship vertices", bytemuck::cast_slice(&mesh.vertices), wgpu::BufferUsages::STORAGE);
@@ -116,7 +140,31 @@ impl Ship {
                 wgpu::BindGroupEntry { binding: 3, resource: nodes.as_entire_binding() },
             ],
         });
-        Self { layout, bind_group, uniform, bound: mesh.bounding_sphere(), camera: ChaseCamera::default(), power: 0.0 }
+        let nozzles = mesh::rcs_nozzles();
+        let torques = unit_torques(&nozzles);
+        let n = nozzles.len();
+        Self {
+            layout,
+            bind_group,
+            uniform,
+            bound: mesh.bounding_sphere(),
+            camera: ChaseCamera::default(),
+            power: 0.0,
+            nozzles,
+            torques,
+            wanted: vec![0.0; n],
+            firing: vec![0.0; n],
+            last_wall: None,
+        }
+    }
+
+    /// Fire the reaction control for this frame: `torque` about the ship's
+    /// (forward, left, up) axes and `force` along them, each component a
+    /// share −1…1 of what the thrusters can give. A nozzle fires as far as
+    /// its own torque and thrust point the wanted way; opposite nozzles
+    /// pair up, so their pushes (or twists) cancel.
+    pub fn set_rcs(&mut self, torque: V3, force: V3) {
+        self.wanted = mix(&self.nozzles, &self.torques, torque, force);
     }
 
     pub fn layout(&self) -> &wgpu::BindGroupLayout {
@@ -141,8 +189,22 @@ impl Ship {
             sky: spectrum_rows(
                 spectrum::blackbody(5500.0).map(|b| b / spectrum::planck(550.0, 5500.0) * SKY_IRRADIANCE),
             ),
-            ..Default::default()
+            ..Zeroable::zeroed()
         };
+        // Plumes linger a moment after the valves close.
+        let dt = self.last_wall.map_or(0.0, |w| (ctx.wall_time - w).clamp(0.0, 0.25));
+        self.last_wall = Some(ctx.wall_time);
+        let decay = (-dt / JET_FADE_S).exp();
+        let mut count = 0;
+        for (i, nz) in self.nozzles.iter().enumerate() {
+            self.firing[i] = self.wanted[i].max(self.firing[i] * decay);
+            if self.firing[i] > 0.02 && count < MAX_JETS {
+                u.jets[2 * count] = f4(nz.exit, self.firing[i]);
+                u.jets[2 * count + 1] = f4(nz.dir, i as f64);
+                count += 1;
+            }
+        }
+        u.rcs = [count as f32, 0.0, 0.0, 0.0];
         if self.camera.chase
             && let Some(sel) = ctx.near.systems.first()
         {
@@ -193,11 +255,70 @@ impl Ship {
     pub fn encode(&mut self, _enc: &mut wgpu::CommandEncoder, _ctx: &FrameContext) {}
 }
 
+/// Direction of each nozzle's torque about the centre of mass, or zero for
+/// one that pushes (nearly) through it.
+fn unit_torques(nozzles: &[mesh::Nozzle]) -> Vec<V3> {
+    let arms: Vec<V3> =
+        nozzles.iter().map(|nz| vec3::cross(vec3::sub(nz.exit, CENTRE_OF_MASS), vec3::scale(nz.dir, -1.0))).collect();
+    let longest = arms.iter().map(|t| vec3::norm(*t)).fold(0.0, f64::max);
+    arms.iter().map(|&t| if vec3::norm(t) > 0.1 * longest { vec3::normalize(t) } else { [0.0; 3] }).collect()
+}
+
+/// Strength 0–1 of each nozzle for a wanted torque and force (see
+/// [`Ship::set_rcs`]).
+fn mix(nozzles: &[mesh::Nozzle], torques: &[V3], torque: V3, force: V3) -> Vec<f64> {
+    nozzles
+        .iter()
+        .zip(torques)
+        .map(|(nz, t)| {
+            let s = vec3::dot(*t, torque) - vec3::dot(nz.dir, force);
+            if s > JET_THRESHOLD { s.min(1.0) } else { 0.0 }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// Net force and torque (about the centre of mass) of the nozzles
+    /// firing at `strength`, per unit thrust.
+    fn net(nozzles: &[mesh::Nozzle], strength: &[f64]) -> (V3, V3) {
+        nozzles.iter().zip(strength).fold(([0.0; 3], [0.0; 3]), |(f, t), (nz, &s)| {
+            let push = vec3::scale(nz.dir, -s);
+            (vec3::add(f, push), vec3::add(t, vec3::cross(vec3::sub(nz.exit, CENTRE_OF_MASS), push)))
+        })
+    }
+
+    /// A turn about one axis twists about that axis with little push or
+    /// twist elsewhere; a push along one axis pushes that way without
+    /// turning the ship much.
+    #[test]
+    fn rcs_mixing_turns_and_pushes_the_right_way() {
+        let nozzles = mesh::rcs_nozzles();
+        let torques = unit_torques(&nozzles);
+        for axis in 0..3 {
+            let mut want = [0.0; 3];
+            want[axis] = 1.0;
+            let (f, t) = net(&nozzles, &mix(&nozzles, &torques, want, [0.0; 3]));
+            eprintln!("turn {axis}: force {f:?}, torque {t:?}");
+            let off = (0..3).filter(|&k| k != axis).map(|k| t[k].abs()).fold(0.0, f64::max);
+            assert!(t[axis] > 0.0 && off < 0.1 * t[axis], "turn {axis}: torque {t:?}");
+            assert!(vec3::norm(f) < 0.05 * t[axis], "turn {axis}: force {f:?} vs torque {t:?}");
+
+            let (f, t) = net(&nozzles, &mix(&nozzles, &torques, [0.0; 3], want));
+            eprintln!("push {axis}: force {f:?}, torque {t:?}");
+            let off = (0..3).filter(|&k| k != axis).map(|k| f[k].abs()).fold(0.0, f64::max);
+            assert!(f[axis] > 0.0 && off < 0.1 * f[axis], "push {axis}: force {f:?}");
+            // Lever arms are metres: compare the twist with the push times
+            // the ship's half-length.
+            assert!(vec3::norm(t) < 0.5 * 26.0 * f[axis], "push {axis}: torque {t:?} vs force {f:?}");
+        }
+    }
+
     #[test]
     fn layouts_match_wgsl() {
-        assert_eq!(std::mem::size_of::<super::ShipFrameGpu>(), (8 + 12) * 16);
+        assert_eq!(std::mem::size_of::<super::ShipFrameGpu>(), (8 + 12 + 1 + 2 * super::MAX_JETS) * 16);
         assert_eq!(std::mem::size_of::<super::bvh::NodeGpu>(), 32);
         assert_eq!(std::mem::size_of::<super::mesh::Vertex>(), 32);
     }

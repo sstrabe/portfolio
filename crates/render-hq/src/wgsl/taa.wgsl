@@ -108,8 +108,10 @@ fn cs_taa(@builtin(global_invocation_id) gid: vec3<u32>) {
             let w = exp(-2.29 * dot(d, d));
             let t = traced(i);
             let y = compress(t.rgb, e);
-            sum += vec4<f32>(y, max(t.a, 0.0)) * w;
-            ship_w += select(0.0, w, t.a < -0.5);
+            // Alpha −1 − T marks the ship and its plumes (see `trace.wgsl`).
+            let on_ship = t.a < -0.5;
+            sum += vec4<f32>(y, select(t.a, -1.0 - t.a, on_ship)) * w;
+            ship_w += select(0.0, w, on_ship);
             wsum += w;
             m1 += y;
             m2 += y * y;

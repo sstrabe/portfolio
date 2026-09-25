@@ -332,10 +332,48 @@ pub struct Extras<'a> {
     pub help: bool,
     /// The map is up: no markers over the view.
     pub map: bool,
+    /// The mouse, for highlighting the button under it.
+    pub cursor: Option<[f32; 2]>,
+}
+
+/// What a HUD button does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Button {
+    Sas,
+    Rcs,
+    Mode(SasMode),
+}
+
+/// A button's place on screen, for clicks.
+#[derive(Clone, Copy, Debug)]
+pub struct ButtonRect {
+    pub min: [f32; 2],
+    pub max: [f32; 2],
+    pub button: Button,
+}
+
+impl ButtonRect {
+    pub fn contains(&self, p: [f32; 2]) -> bool {
+        p[0] >= self.min[0] && p[0] <= self.max[0] && p[1] >= self.min[1] && p[1] <= self.max[1]
+    }
+}
+
+/// The button at `p`, if any.
+pub fn button_at(buttons: &[ButtonRect], p: [f32; 2]) -> Option<Button> {
+    buttons.iter().find(|b| b.contains(p)).map(|b| b.button)
 }
 
 /// Draw the HUD for a `size` image; `ui` is the display's scale factor.
-pub fn draw(o: &mut Overlay, world: &World, nav: &Nav, controls: &Controls, view: &View, ui: f32, extras: &Extras) {
+/// Returns where its buttons are.
+pub fn draw(
+    o: &mut Overlay,
+    world: &World,
+    nav: &Nav,
+    controls: &Controls,
+    view: &View,
+    ui: f32,
+    extras: &Extras,
+) -> Vec<ButtonRect> {
     let (w, h) = (view.size.0 as f32, view.size.1 as f32);
     let s = text_scale(ui);
     if !extras.map {
@@ -345,6 +383,7 @@ pub fn draw(o: &mut Overlay, world: &World, nav: &Nav, controls: &Controls, view
     let centre = [(w * 0.5).round(), h - r - (14.0 * ui).round()];
     navball(o, nav, centre, r, ui);
     gauges(o, world, nav, controls, centre, r, s);
+    let buttons = sas_buttons(o, nav, controls, centre, r, s, ui, extras.cursor);
     readouts(o, world, nav, s, ui);
 
     let line = 10.0 * s;
@@ -357,6 +396,131 @@ pub fn draw(o: &mut Overlay, world: &World, nav: &Nav, controls: &Controls, view
     }
     if extras.help {
         help(o, view, ui);
+    }
+    buttons
+}
+
+/// SAS and RCS switches and the SAS modes, in a column left of the
+/// throttle as in KSP: stability; prograde, retrograde; normal,
+/// anti-normal; radial out, radial in; target, anti-target. A mode whose
+/// direction doesn't exist now (no target, no motion) is dimmed.
+#[allow(clippy::too_many_arguments)]
+fn sas_buttons(
+    o: &mut Overlay,
+    nav: &Nav,
+    controls: &Controls,
+    c: [f32; 2],
+    r: f32,
+    s: f32,
+    ui: f32,
+    cursor: Option<[f32; 2]>,
+) -> Vec<ButtonRect> {
+    use SasMode::*;
+    let size = (13.0 * s).round();
+    let gap = (3.0 * ui).round().max(2.0);
+    let rows: [&[Button]; 6] = [
+        &[Button::Sas, Button::Rcs],
+        &[Button::Mode(Stability)],
+        &[Button::Mode(Prograde), Button::Mode(Retrograde)],
+        &[Button::Mode(Normal), Button::Mode(AntiNormal)],
+        &[Button::Mode(RadialOut), Button::Mode(RadialIn)],
+        &[Button::Mode(Target), Button::Mode(AntiTarget)],
+    ];
+    // Right of the column: the throttle gauge and its percentage.
+    let right = c[0] - r - 10.0 * s - 5.0 * s - 4.0 * 8.0 * s - 14.0 * s;
+    let left = right - 2.0 * size - gap;
+    let top = c[1] + r - 6.0 * size - 5.0 * gap;
+    let active = [0.16, 0.5, 0.24, 0.9];
+    let mut out = Vec::new();
+    let mut tip = None;
+    for (i, row) in rows.iter().enumerate() {
+        let y = top + i as f32 * (size + gap);
+        let width = if row.len() == 1 { 2.0 * size + gap } else { size };
+        for (j, &button) in row.iter().enumerate() {
+            let x = left + j as f32 * (size + gap);
+            let rect = ButtonRect { min: [x, y], max: [x + width, y + size], button };
+            let hover = cursor.is_some_and(|p| rect.contains(p));
+            let on = match button {
+                Button::Sas => controls.sas,
+                Button::Rcs => controls.rcs,
+                Button::Mode(m) => controls.sas && controls.sas_mode == m,
+            };
+            o.rect(rect.min, rect.max, if on { active } else { PANEL });
+            if hover {
+                let e = ui.max(1.0);
+                let edge = [1.0, 1.0, 1.0, 0.7];
+                o.rect(rect.min, [rect.max[0], rect.min[1] + e], edge);
+                o.rect([rect.min[0], rect.max[1] - e], rect.max, edge);
+                o.rect(rect.min, [rect.min[0] + e, rect.max[1]], edge);
+                o.rect([rect.max[0] - e, rect.min[1]], rect.max, edge);
+            }
+            let mid = [x + 0.5 * width, y + 0.5 * size];
+            match button {
+                Button::Sas | Button::Rcs => {
+                    let label = if button == Button::Sas { "SAS" } else { "RCS" };
+                    let ts = (s * 0.5).max(1.0);
+                    let tw = Overlay::text_width(label, ts);
+                    o.text([mid[0] - 0.5 * tw, mid[1] - 4.0 * ts], label, ts, if on { TEXT } else { DIM });
+                }
+                Button::Mode(Stability) => {
+                    let k = 0.3 * size;
+                    let col = if on { TEXT } else { DIM };
+                    o.ring(mid, k, 1.5 * ui, col);
+                    o.line([mid[0] - 1.8 * k, mid[1]], [mid[0] + 1.8 * k, mid[1]], 1.5 * ui, col);
+                    o.line([mid[0], mid[1] - 1.5 * k], [mid[0], mid[1] - k], 1.5 * ui, col);
+                }
+                Button::Mode(m) => {
+                    let alpha = if nav.hold(m).is_some() { 1.0 } else { 0.3 };
+                    marker(o, mode_marker(m), mid, 0.26 * size, alpha);
+                }
+            }
+            if hover {
+                tip = Some((
+                    [left, top - 10.0 * s],
+                    match button {
+                        Button::Sas => format!("SAS (T): {}", if controls.sas { "on" } else { "off" }),
+                        Button::Rcs => format!("RCS (R): {}", if controls.rcs { "on" } else { "off" }),
+                        Button::Mode(m) => format!("hold {} ({})", m.name(), mode_key(m)),
+                    },
+                ));
+            }
+            out.push(rect);
+        }
+    }
+    if let Some((p, text)) = tip {
+        let ts = (s * 0.5).max(1.0);
+        let tw = Overlay::text_width(&text, ts);
+        o.rect([p[0] - 3.0, p[1] - 3.0], [p[0] + tw + 3.0, p[1] + 8.0 * ts + 3.0], PANEL);
+        o.text(p, &text, ts, TEXT);
+    }
+    out
+}
+
+fn mode_marker(m: SasMode) -> Marker {
+    match m {
+        SasMode::Prograde | SasMode::Stability => Marker::Prograde,
+        SasMode::Retrograde => Marker::Retrograde,
+        SasMode::Normal => Marker::Normal,
+        SasMode::AntiNormal => Marker::AntiNormal,
+        SasMode::RadialOut => Marker::RadialOut,
+        SasMode::RadialIn => Marker::RadialIn,
+        SasMode::Target => Marker::Target,
+        SasMode::AntiTarget => Marker::AntiTarget,
+    }
+}
+
+/// The number key that selects a mode.
+fn mode_key(m: SasMode) -> char {
+    match m {
+        SasMode::Stability => '1',
+        SasMode::Prograde => '2',
+        SasMode::Retrograde => '3',
+        SasMode::Normal => '4',
+        SasMode::AntiNormal => '5',
+        SasMode::RadialOut => '6',
+        SasMode::RadialIn => '7',
+        SasMode::Target => '8',
+        SasMode::AntiTarget => '9',
     }
 }
 
@@ -656,11 +820,12 @@ fn readouts(o: &mut Overlay, world: &World, nav: &Nav, s: f32, ui: f32) {
     }
 }
 
-const HELP: [(&str, &str); 26] = [
+const HELP: [(&str, &str); 27] = [
     ("W / S", "pitch (W: nose down)"),
     ("A / D", "yaw"),
     ("Q / E", "roll"),
-    ("T", "SAS on / off (damps turning)"),
+    ("T", "SAS on / off (or the buttons"),
+    ("", "left of the navball)"),
     ("1 ... 9", "SAS: hold, prograde, retrograde,"),
     ("", "normal, anti-normal, radial out,"),
     ("", "radial in, target, anti-target"),

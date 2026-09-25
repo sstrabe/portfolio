@@ -5,6 +5,7 @@ use crate::flight::{self, Nav};
 use crate::input::Controls;
 use crate::map::Map;
 use render_hq::{Gpu, Session};
+use winit::keyboard::KeyCode;
 
 pub fn run(o: &Options) -> Result<(), String> {
     let (w, h) = o.headless.expect("headless size");
@@ -28,6 +29,12 @@ pub fn run(o: &Options) -> Result<(), String> {
     s.gpu.set_render_scale(o.scale.unwrap_or(1.0));
 
     let mut controls = Controls::default();
+    if o.rcs {
+        // Pitch down and translate forward.
+        for key in [KeyCode::KeyR, KeyCode::KeyW, KeyCode::KeyH] {
+            controls.key(key, true);
+        }
+    }
     let mut map = Map::default();
     let dt = 1.0 / 60.0;
     let frames = (o.seconds / dt).round().max(1.0) as usize;
@@ -35,6 +42,8 @@ pub fn run(o: &Options) -> Result<(), String> {
         let nav = Nav::new(&s.world);
         let hold = if controls.sas { nav.hold(controls.sas_mode) } else { None };
         let mut input = controls.sample(dt, hold);
+        let (torque, force) = controls.rcs_command();
+        s.gpu.ship.set_rcs(torque, force);
         if o.burn {
             input.thrust = [1.0, 0.0, 0.0];
             input.boost = true;
@@ -56,7 +65,7 @@ pub fn run(o: &Options) -> Result<(), String> {
                 map.draw(&mut gpu.overlay, world, &nav, view.size, 1.0, None);
             }
             if o.hud || o.map {
-                let extras = flight::Extras { fps: 60.0, note: None, help: o.help, map: o.map };
+                let extras = flight::Extras { fps: 60.0, note: None, help: o.help, map: o.map, cursor: None };
                 flight::draw(&mut gpu.overlay, world, &nav, &controls, &view, 1.0, &extras);
             }
         }

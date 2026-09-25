@@ -16,7 +16,7 @@ struct PostFrame {
     // A direction n seen now was seen at n' = (M h).yzw / (M h).x with
     // h = (−1, n): a Lorentz transformation (rotation and aberration).
     reproject: array<vec4<f32>, 4>,
-    // The ship's pixels (marked by the trace with alpha −1) move with the
+    // The ship's pixels (marked by the trace with alpha ≤ −1) move with the
     // camera, not the sky: rows are the previous camera axes in the current
     // ones, so n' = (m₀·n, m₁·n, m₂·n). Row 3 is unused.
     reproject_ship: array<vec4<f32>, 4>,

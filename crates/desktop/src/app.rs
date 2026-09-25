@@ -42,6 +42,8 @@ struct State {
     help: bool,
     cursor: Option<[f32; 2]>,
     last_click: Option<(Instant, [f32; 2])>,
+    /// Where the HUD's buttons were drawn last frame.
+    buttons: Vec<flight::ButtonRect>,
     last: Instant,
     /// Adaptive resolution of the per-pixel ray tracer.
     scale: f32,
@@ -78,6 +80,7 @@ impl State {
             help: false,
             cursor: None,
             last_click: None,
+            buttons: Vec::new(),
             last: now,
             scale,
             avg_ms: 16.0,
@@ -117,6 +120,8 @@ impl State {
             matches!(world.status, PilotStatus::Orbit(_) | PilotStatus::HoleOrbit | PilotStatus::Autopilot(_));
         let hold = if self.controls.sas && !autopilot { Nav::new(world).hold(self.controls.sas_mode) } else { None };
         let input = self.controls.sample(dt, hold);
+        let (torque, force) = self.controls.rcs_command();
+        self.session.gpu.ship.set_rcs(torque, force);
         self.session.advance(dt, &input);
         self.session.gpu.ship.power = self.controls.throttle;
         let world = &self.session.world;
@@ -142,10 +147,16 @@ impl State {
         if self.map.on {
             self.map.draw(&mut gpu.overlay, world, &nav, view.size, ui, self.cursor);
         }
-        let extras =
-            flight::Extras { fps: 1000.0 / self.avg_ms, note: note.as_deref(), help: self.help, map: self.map.on };
+        let extras = flight::Extras {
+            fps: 1000.0 / self.avg_ms,
+            note: note.as_deref(),
+            help: self.help,
+            map: self.map.on,
+            cursor: self.cursor,
+        };
+        self.buttons.clear();
         if self.hud {
-            flight::draw(&mut gpu.overlay, world, &nav, &self.controls, &view, ui, &extras);
+            self.buttons = flight::draw(&mut gpu.overlay, world, &nav, &self.controls, &view, ui, &extras);
         } else if self.help {
             flight::help(&mut gpu.overlay, &view, ui);
         }
@@ -285,6 +296,15 @@ impl State {
     /// Left click: on the map, a planet becomes the target, and a double
     /// click centres the map on whatever was clicked.
     fn click(&mut self) {
+        if let Some(button) = self.cursor.and_then(|p| flight::button_at(&self.buttons, p)) {
+            let note = match button {
+                flight::Button::Sas => self.controls.toggle_sas(),
+                flight::Button::Rcs => self.controls.toggle_rcs(),
+                flight::Button::Mode(m) => self.controls.set_sas_mode(m),
+            };
+            self.notify(note);
+            return;
+        }
         let Some(cursor) = self.cursor.filter(|_| self.map.on) else { return };
         let now = Instant::now();
         let double = self.last_click.is_some_and(|(at, p)| {

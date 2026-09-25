@@ -13,6 +13,9 @@
 // reflected by the planet below, skylight scaled by the baked ambient
 // occlusion, and emission from the drive's plasma, hot radiators and the
 // navigation lights.
+//
+// The reaction-control thrusters' plumes are drawn in front of the hull and
+// the sky (`ship_plumes`).
 // ---------------------------------------------------------------------------
 
 struct ShipFrame {
@@ -27,6 +30,8 @@ struct ShipFrame {
     sun: Spectrum,          // irradiance from the star, W m⁻² nm⁻¹
     planet: Spectrum,       // irradiance from the sunlit planet
     sky: Spectrum,          // irradiance from the rest of the sky (per hemisphere)
+    rcs: vec4<f32>,         // number of firing RCS nozzles, unused ×3
+    jets: array<vec4<f32>, 64>,  // per nozzle: exit (m), strength; exhaust direction, index
 }
 
 struct ShipNode {
@@ -53,6 +58,16 @@ const MAT_LIGHT: u32 = 7u;
 
 struct ShipHit {
     hit: bool,
+    L: Spectrum,
+    // RCS plumes in front of the hull (or the scene): their radiance and
+    // transmittance.
+    plume: Spectrum,
+    plume_t: f32,
+}
+
+struct ShipHull {
+    hit: bool,
+    t: f32,
     L: Spectrum,
 }
 
@@ -246,14 +261,110 @@ fn ship_light(s: ShipSurface, n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, e: Spect
     return spec_scale(spec_mul(brdf, e), nl);
 }
 
+// ---------------------------------------------------------------------------
+// RCS plumes. A firing nozzle blows a jet that spreads at about 25° and
+// thins as it widens (density ∝ 1/width², the flow being conserved). The
+// gas itself is nearly invisible; droplets of unburnt propellant scatter
+// light, sunlight forward more than back (Henyey–Greenstein, g = 0.6),
+// and where the puff is thick, light scattered many times makes it look
+// white from any side, like a cloud (an even 0.2 per steradian on top).
+// The gas glows faintly right at the nozzle where it is still hot. Each jet
+// is sampled across where the ray passes closest to its axis, over a
+// window a few widths wide, in front of whatever the ray hits.
+// ---------------------------------------------------------------------------
+
+const JET_W0: f32 = 0.07;       // core width at the exit, m
+const JET_SPREAD: f32 = 0.3;    // widening per metre along the jet
+const JET_K: f32 = 60.0;        // extinction at the core of a full jet at the exit, per m
+
+struct Plume {
+    L: Spectrum,
+    T: f32,
+}
+
+fn ship_plumes(o: vec3<f32>, d: vec3<f32>, t_max: f32) -> Plume {
+    var out = Plume(spec(0.0), 1.0);
+    let g = 0.6;
+    let mu = dot(ship.sun_dir.xyz, d);
+    let hg = 0.5 * (1.0 - g * g) / (4.0 * PI * pow(1.0 + g * g - 2.0 * g * mu, 1.5)) + 0.2;
+    var src = spec_scale(spec_add(ship.sky, ship.planet), 1.0 / (4.0 * PI));
+    if (ship.sun_dir.w > 0.5) {
+        src = spec_axpy(ship.sun, hg, src);
+    }
+    let hot = spec_planck(2400.0);
+    let count = min(u32(ship.rcs.x + 0.5), 32u);
+    for (var j = 0u; j < count; j++) {
+        let a = ship.jets[2u * j];
+        let b = ship.jets[2u * j + 1u];
+        let p = a.xyz;
+        let strength = a.w;
+        let ax = b.xyz;
+        let len = 1.5 + 4.5 * strength;
+        // Closest approach of the ray to the jet's axis.
+        let w0 = o - p;
+        let cb = dot(d, ax);
+        let sin2 = max(1.0 - cb * cb, 1e-4);
+        let dd = dot(d, w0);
+        let e = dot(ax, w0);
+        let s_axis = clamp((e - cb * dd) / sin2, 0.0, len);
+        let t_c = dot(p + ax * s_axis - o, d);
+        let width = JET_W0 + JET_SPREAD * s_axis;
+        let miss = length(o + d * t_c - (p + ax * s_axis));
+        if (miss > 3.0 * width + 0.2) {
+            continue;
+        }
+        let half = min(3.0 * width / sqrt(sin2), len);
+        let t0 = max(t_c - half, 0.0);
+        let t1 = min(t_c + half, t_max);
+        if (t1 <= t0) {
+            continue;
+        }
+        let steps = 10;
+        let dt = (t1 - t0) / f32(steps);
+        for (var i = 0; i < steps; i++) {
+            let x = o + d * (t0 + (f32(i) + 0.5) * dt) - p;
+            let along = dot(x, ax);
+            if (along < 0.0 || along > len) {
+                continue;
+            }
+            let r2 = max(dot(x, x) - along * along, 0.0);
+            let w = JET_W0 + JET_SPREAD * along;
+            let fade = 1.0 - smoothstep(0.4 * len, len, along);
+            let flicker = 0.55 + 0.9 * value_noise(vec3<f32>(along * 5.0 - ship.glow.y * 40.0, sqrt(r2) * 8.0, b.w * 3.7));
+            let k = JET_K * strength * (JET_W0 / w) * (JET_W0 / w) * exp(-r2 / (w * w)) * fade * flicker;
+            let dtau = k * dt;
+            let glow = spec_scale(hot, 0.003 * exp(-along / 0.12));
+            out.L = spec_axpy(spec_add(src, glow), out.T * dtau, out.L);
+            out.T *= exp(-dtau);
+        }
+    }
+    return out;
+}
+
 fn ship_trace(n: vec3<f32>) -> ShipHit {
     var h: ShipHit;
     h.hit = false;
+    h.L = spec(0.0);
+    h.plume = spec(0.0);
+    h.plume_t = 1.0;
     if (ship.cam_pos.w < 0.5) {
         return h;
     }
     let o = ship.cam_pos.xyz;
     let d = normalize(n.x * ship.cam_x.xyz + n.y * ship.cam_y.xyz + n.z * ship.cam_z.xyz);
+    let hull = ship_hull(o, d);
+    h.hit = hull.hit;
+    h.L = hull.L;
+    if (ship.rcs.x > 0.5) {
+        let plume = ship_plumes(o, d, select(1e9, hull.t, hull.hit));
+        h.plume = plume.L;
+        h.plume_t = plume.T;
+    }
+    return h;
+}
+
+fn ship_hull(o: vec3<f32>, d: vec3<f32>) -> ShipHull {
+    var h = ShipHull(false, 1e9, spec(0.0));
     // Bounding sphere.
     let oc = o - ship.bound.xyz;
     let b = dot(oc, d);
@@ -296,6 +407,7 @@ fn ship_trace(n: vec3<f32>) -> ShipHit {
     }
     l = spec_add(l, spec_scale(spec_mul(spec_add(s.albedo, spec_scale(s.f0, 0.5)), ship.sky), ao / PI));
     h.hit = true;
+    h.t = r.t;
     h.L = l;
     return h;
 }

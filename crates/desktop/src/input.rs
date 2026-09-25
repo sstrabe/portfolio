@@ -106,6 +106,10 @@ pub struct Controls {
     pub rcs: bool,
     /// Rate of turn (roll, pitch, yaw) as a fraction of the maximum.
     spin: V3,
+    /// What the reaction control did last frame: angular acceleration
+    /// and translation, as shares of the most it can give.
+    rcs_torque: V3,
+    rcs_force: V3,
     /// Right mouse button held: dragging orbits the camera.
     dragging: bool,
     drag: [f64; 2],
@@ -121,6 +125,8 @@ impl Default for Controls {
             sas_mode: SasMode::Stability,
             rcs: false,
             spin: [0.0; 3],
+            rcs_torque: [0.0; 3],
+            rcs_force: [0.0; 3],
             dragging: false,
             drag: [0.0; 2],
             wheel: 0.0,
@@ -154,9 +160,7 @@ impl Controls {
             _ => None,
         };
         if let Some(mode) = mode {
-            self.sas = true;
-            self.sas_mode = mode;
-            return Some(Action::Note(format!("SAS: {}", mode.name())));
+            return Some(Action::Note(self.set_sas_mode(mode)));
         }
         match code {
             F11 => Some(Action::ToggleFullscreen),
@@ -167,18 +171,8 @@ impl Controls {
             Slash => Some(Action::Warp(0.0)),
             BracketRight => Some(Action::ThrustLimit(10.0)),
             BracketLeft => Some(Action::ThrustLimit(0.1)),
-            KeyT => {
-                self.sas = !self.sas;
-                Some(Action::Note(if self.sas {
-                    format!("SAS on: {}", self.sas_mode.name())
-                } else {
-                    "SAS off".into()
-                }))
-            }
-            KeyR => {
-                self.rcs = !self.rcs;
-                Some(Action::Note(if self.rcs { "RCS on" } else { "RCS off" }.into()))
-            }
+            KeyT => Some(Action::Note(self.toggle_sas())),
+            KeyR => Some(Action::Note(self.toggle_rcs())),
             KeyZ => {
                 self.throttle = 1.0;
                 None
@@ -202,6 +196,24 @@ impl Controls {
             Backspace => Some(Action::Exposure(0.0)),
             _ => None,
         }
+    }
+
+    /// Switch SAS on or off; returns a note saying which.
+    pub fn toggle_sas(&mut self) -> String {
+        self.sas = !self.sas;
+        if self.sas { format!("SAS on: {}", self.sas_mode.name()) } else { "SAS off".into() }
+    }
+
+    pub fn toggle_rcs(&mut self) -> String {
+        self.rcs = !self.rcs;
+        if self.rcs { "RCS on" } else { "RCS off" }.into()
+    }
+
+    /// Hold the nose on `mode` (switching SAS on).
+    pub fn set_sas_mode(&mut self, mode: SasMode) -> String {
+        self.sas = true;
+        self.sas_mode = mode;
+        format!("SAS: {}", mode.name())
     }
 
     /// Right mouse button pressed or released.
@@ -237,6 +249,12 @@ impl Controls {
         self.dragging = false;
     }
 
+    /// Angular acceleration (roll, pitch, yaw) and translation the
+    /// reaction control gave in the last frame, shares −1…1 of its most.
+    pub fn rcs_command(&self) -> (V3, V3) {
+        (self.rcs_torque, self.rcs_force)
+    }
+
     /// Stop turning at once (when an autopilot takes over).
     pub fn stop_spin(&mut self) {
         self.spin = [0.0; 3];
@@ -267,6 +285,7 @@ impl Controls {
             (false, _) => self.spin,
         };
         let step = SPIN_ACCEL * dt;
+        let before = self.spin;
         for i in 0..3 {
             let want = if command[i] != 0.0 { command[i] } else { target[i] };
             self.spin[i] += (want - self.spin[i]).clamp(-step, step);
@@ -280,6 +299,9 @@ impl Controls {
         } else {
             [0.0; 3]
         };
+        // The thrusters fire while the rotation speeds up or slows down.
+        self.rcs_torque = std::array::from_fn(|i| if step > 0.0 { (self.spin[i] - before[i]) / step } else { 0.0 });
+        self.rcs_force = rcs;
         Input {
             thrust: vec3::axpy(vec3::scale(rcs, RCS), self.throttle * ENGINE, [1.0, 0.0, 0.0]),
             turn: self.spin,

@@ -141,13 +141,17 @@ Controls work like Kerbal Space Program's (`F1` lists them in the window):
 - `W`/`S` pitch (`W` puts the nose down), `A`/`D` yaw, `Q`/`E` roll. The
   ship turns with inertia. SAS (`T`) stops it turning, and `1`–`9` make SAS
   hold the nose on attitude, prograde, retrograde, normal, anti-normal,
-  radial out, radial in, the target or away from it.
+  radial out, radial in, the target or away from it; the buttons left of the
+  navball do the same, as in KSP.
 - The main engine has a throttle that stays where you set it: `Shift` /
   `Ctrl` open and close it, `Z` is full and `X` cuts it. `[` / `]` scale
   the engine's thrust limit by 10. At a limit of 1, full throttle is
   35,000 g; near a planet the limit resets to the power of ten just above
   its surface gravity, and back to 1 away from it.
 - `R` toggles RCS: `H`/`N` forward/back, `J`/`L` left/right, `I`/`K` up/down.
+  The ship's 32 RCS nozzles (quads fore and aft) fire for these and whenever
+  its rotation speeds up or slows down, including SAS stopping a turn; their
+  plumes show in the chase view.
 - `B` (held) brakes to the local rest frame: the planet or star whose
   gravity dominates, else the hole's frame.
 - `O` flies to the target and into a circular orbit, warping time on the

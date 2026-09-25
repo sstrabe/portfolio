@@ -213,6 +213,7 @@ yards", and a detailed design followed (`docs/planets.md`). Status:
 | Stellar-mass hole lensing | done |
 | KSP-style controls, HUD with navball, map view (`render-hq/src/overlay.rs` draws both) | done |
 | Targets: planets or Sgr A* (`world::Target`); orbit autopilot to either (hole: 50 M, static-observer frame) | done |
+| RCS: 32 nozzles in the mesh, firing from the commanded angular acceleration and translation (`Ship::set_rcs`), plumes traced in `ship.wgsl`; SAS buttons by the navball | done |
 | RT-core terrain and ship, surface maps, 200–1600 nm atmosphere tables, presets (Mars, Venus, Titan, Jupiter, Neptune) | not started |
 
 Suggested next steps, in order: fly it in the window with the owner and

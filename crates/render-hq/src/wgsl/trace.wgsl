@@ -54,12 +54,14 @@ fn cs_trace(
     var on_ship = false;
     if (inside) {
         let ship = ship_trace(n);
-        on_ship = ship.hit;
+        on_ship = ship.hit || ship.plume_t < 0.97;
         if (ship.hit) {
             near = NearResult(Medium(ship.L, spec(0.0)), true);
         } else {
             near = near_field(n, frame.cam.z);
         }
+        // RCS plumes in front of it all.
+        near.m = Medium(spec_axpy(near.m.L, ship.plume_t, ship.plume), spec_scale(near.m.T, ship.plume_t));
     }
     var far: FarTrace;
     far.m = medium_clear();
@@ -79,9 +81,11 @@ fn cs_trace(
     }
     let total = spec_fma(near.m.T, far_l, near.m.L);
     var rgb = spec_to_rgb(total);
-    // The ship is opaque; alpha −1 tells the temporal pass it moves with
-    // the camera.
-    var alpha = select(spec_mean(near.m.T), -1.0, on_ship);
+    // Alpha is the near field's transmittance T; for the ship and its
+    // plumes, which move with the camera, it is −1 − T so the temporal pass
+    // can tell.
+    let transmit = spec_mean(near.m.T);
+    var alpha = select(transmit, -1.0 - transmit, on_ship);
     // One non-finite pixel would spread over the whole frame through the
     // temporal accumulation and the FFT: show it as magenta instead
     // (KERR_DEBUG_NAN) or black.
