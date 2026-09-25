@@ -748,7 +748,13 @@ mod tests {
                 at = a.parent();
             }
         }
-        let done = tile_gen.generate(&gpu.device, &gpu.queue, (0, 0, i), planet, &anchor, &tiles, None);
+        let done = tile_gen.generate(
+            &gpu.device,
+            &gpu.queue,
+            tilegen::Surface { key: (0, 0, i), planet, anchor: &anchor },
+            &tiles,
+            None,
+        );
         assert_eq!(done.len(), tiles.len(), "every tile generated");
         let layer = |t: TileId| done.iter().find(|d| d.0 == t).map(|d| d.1).unwrap();
         let heights = |t: TileId| tile_gen.read_heights(&gpu.device, &gpu.queue, layer(t));

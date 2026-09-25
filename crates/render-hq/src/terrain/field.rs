@@ -10,7 +10,7 @@
 
 use super::anchor::Anchor;
 use super::maps::MapKey;
-use super::tilegen::{self, TileGen};
+use super::tilegen::{self, Surface, TileGen};
 use super::tiles::{self, TileId};
 use kerr::planets::Planet;
 use kerr::vec3::{self, V3};
@@ -54,15 +54,14 @@ impl TerrainField {
         Self { tile_gen: TileGen::new(device), anchor: None, drawn: Vec::new(), stats: FieldStats::default() }
     }
 
-    /// Update for an eye at `eye_km` (body-fixed, from the centre of
-    /// `planet`, identified by `key`) and a view of `pixel_angle` rad per
+    /// Update for an eye at `eye_km` (body-fixed, from the centre of the
+    /// planet, which `key` identifies) and a view of `pixel_angle` rad per
     /// pixel.
     pub fn update(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        key: MapKey,
-        planet: &Planet,
+        (key, planet): (MapKey, &Planet),
         eye_km: V3,
         pixel_angle: f64,
         profiler: Option<&mut crate::profile::Profiler>,
@@ -85,7 +84,7 @@ impl TerrainField {
 
         self.tile_gen.atlas.begin_frame();
         let plan = self.tile_gen.atlas.plan(&wanted, TILE_BUDGET);
-        let made = self.tile_gen.generate(device, queue, key, planet, anchor, &plan, profiler);
+        let made = self.tile_gen.generate(device, queue, Surface { key, planet, anchor }, &plan, profiler);
 
         self.drawn.clear();
         let mut shown_already = HashSet::new();

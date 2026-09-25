@@ -128,6 +128,15 @@ struct JobGpu {
     pad: [u32; 32],
 }
 
+/// What the tiles are of: a planet (identified by `key`) and the anchor of
+/// its fine noise.
+#[derive(Clone, Copy)]
+pub struct Surface<'a> {
+    pub key: MapKey,
+    pub planet: &'a Planet,
+    pub anchor: &'a Anchor,
+}
+
 /// The tile atlas and its generator: heights (km, R32Float) and packed
 /// material channels (R32Uint) per layer, and each tile's height range.
 pub struct TileGen {
@@ -255,8 +264,8 @@ impl TileGen {
         Self { height, material, range, params, jobs, pipeline, bind_group, atlas: Atlas::new(layers), planet: None }
     }
 
-    /// Generate `tiles` of `planet` (identified by `key`; a new planet
-    /// empties the atlas) around `anchor`: coarse to fine, each refined
+    /// Generate `tiles` of `surface` (a new planet empties the atlas):
+    /// coarse to fine, each refined
     /// tile's parent resident or earlier in the list, at most [`MAX_JOBS`].
     /// Returns the tiles generated and their layers (tiles whose parent is
     /// missing, or that find no free layer, are skipped).
@@ -264,12 +273,11 @@ impl TileGen {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        key: MapKey,
-        planet: &Planet,
-        anchor: &Anchor,
+        surface: Surface,
         tiles: &[TileId],
         profiler: Option<&mut crate::profile::Profiler>,
     ) -> Vec<(TileId, u32)> {
+        let Surface { key, planet, anchor } = surface;
         if self.planet != Some(key) {
             self.atlas = Atlas::new(self.atlas.capacity());
             self.planet = Some(key);

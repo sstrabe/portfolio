@@ -382,7 +382,7 @@ impl NearField {
         {
             let planet = p.planet(&self.selection).clone();
             let eye = p.pilot_body_km();
-            self.terrain.update(device, queue, key, &planet, eye, pixel_angle, profiler);
+            self.terrain.update(device, queue, (key, &planet), eye, pixel_angle, profiler);
         }
         let systems: Vec<SystemGpu> = self.selection.systems.iter().map(|s| s.gpu).collect();
         let planets: Vec<PlanetGpu> = self
