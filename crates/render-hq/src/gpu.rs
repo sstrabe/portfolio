@@ -463,6 +463,7 @@ impl Gpu {
             frame_index: self.frame_index,
             wall_time,
             view,
+            camera: self.ship.camera.pose().axes,
         };
         self.atmo.update(&ctx);
         self.nebula.update(&ctx);

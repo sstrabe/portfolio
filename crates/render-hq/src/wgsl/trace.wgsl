@@ -51,8 +51,10 @@ fn cs_trace(
     let n = ndc_to_dir(ndc);
 
     var near = NearResult(medium_clear(), !inside);
+    var on_ship = false;
     if (inside) {
         let ship = ship_trace(n);
+        on_ship = ship.hit;
         if (ship.hit) {
             near = NearResult(Medium(ship.L, spec(0.0)), true);
         } else {
@@ -77,7 +79,9 @@ fn cs_trace(
     }
     let total = spec_fma(near.m.T, far_l, near.m.L);
     var rgb = spec_to_rgb(total);
-    var alpha = spec_mean(near.m.T);
+    // The ship is opaque; alpha −1 tells the temporal pass it moves with
+    // the camera.
+    var alpha = select(spec_mean(near.m.T), -1.0, on_ship);
     // One non-finite pixel would spread over the whole frame through the
     // temporal accumulation and the FFT: show it as magenta instead
     // (KERR_DEBUG_NAN) or black.

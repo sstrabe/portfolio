@@ -59,6 +59,8 @@ pub struct FrameContext<'a> {
     /// The view's tetrad: the pilot's, turned onto the camera's axes in the
     /// chase view.
     pub view: &'a kerr::pilot::Tetrad,
+    /// The camera's axes (forward, left, up) in the ship frame.
+    pub camera: [kerr::vec3::V3; 3],
 }
 
 #[cfg(test)]

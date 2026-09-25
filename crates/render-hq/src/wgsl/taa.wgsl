@@ -98,6 +98,7 @@ fn cs_taa(@builtin(global_invocation_id) gid: vec3<u32>) {
     var wsum = 0.0;
     var m1 = vec3<f32>(0.0);
     var m2 = vec3<f32>(0.0);
+    var ship_w = 0.0;
     for (var dy = -1; dy <= 1; dy++) {
         for (var dx = -1; dx <= 1; dx++) {
             let i = clamp(i0 + vec2<i32>(dx, dy), vec2<i32>(0), rs - 1);
@@ -107,7 +108,8 @@ fn cs_taa(@builtin(global_invocation_id) gid: vec3<u32>) {
             let w = exp(-2.29 * dot(d, d));
             let t = traced(i);
             let y = compress(t.rgb, e);
-            sum += vec4<f32>(y, t.a) * w;
+            sum += vec4<f32>(y, max(t.a, 0.0)) * w;
+            ship_w += select(0.0, w, t.a < -0.5);
             wsum += w;
             m1 += y;
             m2 += y * y;
@@ -118,11 +120,19 @@ fn cs_taa(@builtin(global_invocation_id) gid: vec3<u32>) {
     let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3<f32>(0.0)));
     let gamma = pf.taa2.x;
 
-    // Where this pixel's direction was on the previous frame's screen.
+    // Where this pixel's direction was on the previous frame's screen: for
+    // the sky through the Lorentz transformation between the frames, for
+    // the ship through the camera's turn relative to it.
     let n = ndc_to_dir(out_ndc(px));
-    let h = vec4<f32>(-1.0, n);
-    let hp = vec4<f32>(dot(pf.reproject[0], h), dot(pf.reproject[1], h), dot(pf.reproject[2], h), dot(pf.reproject[3], h));
-    let np = hp.yzw / hp.x;
+    var np: vec3<f32>;
+    if (ship_w > 0.5 * wsum) {
+        let ms = pf.reproject_ship;
+        np = vec3<f32>(dot(ms[0].xyz, n), dot(ms[1].xyz, n), dot(ms[2].xyz, n));
+    } else {
+        let h = vec4<f32>(-1.0, n);
+        let hp = vec4<f32>(dot(pf.reproject[0], h), dot(pf.reproject[1], h), dot(pf.reproject[2], h), dot(pf.reproject[3], h));
+        np = hp.yzw / hp.x;
+    }
     let q = dir_to_ndc(np);
     let uv = vec2<f32>(q.x * 0.5 + 0.5, 0.5 - q.y * 0.5);
     let valid = q.z > 0.0 && all(uv >= vec2<f32>(0.0)) && all(uv <= vec2<f32>(1.0)) && pf.taa.w < 0.5;

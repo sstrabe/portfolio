@@ -63,6 +63,7 @@ const SHO_STRETCH: [f64; 3] = [2.2, 1.0, 2.6];
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
 struct PostFrame {
     reproject: [[f32; 4]; 4],
+    reproject_ship: [[f32; 4]; 4],
     sizes: [u32; 4],
     grid: [u32; 4],
     grid2: [u32; 4],
@@ -161,6 +162,7 @@ pub struct Post {
     count: u32,
     parity: usize,
     prev_tetrad: Option<kerr::pilot::Tetrad>,
+    prev_camera: Option<[kerr::vec3::V3; 3]>,
     still_frames: u32,
     last_wall: Option<f64>,
     snap_frames: u32,
@@ -324,6 +326,7 @@ impl Post {
             count: 0,
             parity: 0,
             prev_tetrad: None,
+            prev_camera: None,
             still_frames: 0,
             last_wall: None,
             snap_frames: 3,
@@ -602,6 +605,17 @@ impl Post {
             }
         }
         self.prev_tetrad = Some(view);
+        // The ship moves with the camera: its pixels only move when the
+        // camera turns relative to it (the chase camera being orbited).
+        // Row a: the previous frame's camera axis a in this frame's axes.
+        let prev_camera = self.prev_camera.unwrap_or(ctx.camera);
+        let mut ship_m = [[0.0f32; 4]; 4];
+        for (a, row) in ship_m.iter_mut().take(3).enumerate() {
+            for (b, v) in row.iter_mut().take(3).enumerate() {
+                *v = kerr::vec3::dot(prev_camera[a], ctx.camera[b]) as f32;
+            }
+        }
+        self.prev_camera = Some(ctx.camera);
         self.still_frames = if dev < 2e-6 { self.still_frames + 1 } else { 0 };
         let cap = if self.still_frames > 2 {
             (HISTORY_MOVING + self.still_frames as f32).min(HISTORY_STILL)
@@ -637,6 +651,7 @@ impl Post {
 
         self.uniforms = PostFrame {
             reproject: m,
+            reproject_ship: ship_m,
             sizes: [t.out.0, t.out.1, trace.0, trace.1],
             grid: [t.grid.nx, t.grid.ny, t.grid.width, t.grid.height],
             grid2: [t.grid.step, self.count, 0, 0],
