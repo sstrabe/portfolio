@@ -241,6 +241,18 @@ march). The post chain is ~2 ms.
    the hull's ends still smear, the next step is a per-pixel depth from the
    trace (the depth-aware TAA terrain phase 3 needs anyway). Separately, the sun's starburst switches on and
    off as the hull's edge crosses its disc (expected, but abrupt).
+13. **Bug to investigate (owner, 2026-09-25): apparent brightness steps in
+   the sky near Sgr A*.** Screenshot: orbiting Sgr A* at r = 0.95 AU (0.264
+   c), chase view towards the hole's shadow, 1920×1080. The lensed sky
+   shows sharp, straight, vertical brightness boundaries running the full
+   height of the frame: bright teal nebula left of x ≈ 770 px, a pinker,
+   dimmer band to x ≈ 1130 px, darker beyond. Anything lensed by the hole
+   should curve, so straight screen-space edges point at a screen-space
+   cause. Candidates: the nebula cube-map cache (`KERR_NEBULA_CUBE`, its
+   faces' exposure or resolution), the far field's per-workgroup footprint
+   (`escape_dirs`/`footprint` in `trace.wgsl`), exposure metering or TAA
+   of the lensed sky. First step: reproduce headless near the hole
+   (`--near-hole`), toggle `KERR_NEBULAE`/`KERR_NEBULA_CUBE`, and diff.
 
 ---
 
