@@ -181,7 +181,7 @@ fn near_planet(world: &mut World, start: PlanetStart) -> Result<String, String> 
     world.pilot = pilot;
     world.cfg.time_scale = 1.0 / SECONDS_PER_M;
     Ok(format!(
-        "orbiting {altitude_km:.0} km above a {:?} world of {radius:.0} km radius at {:.2} km/s, {:.2} AU from a {:.0}          K star ({:?} view)",
+        "orbiting {altitude_km:.0} km above a {:?} world of {radius:.0} km radius at {:.2} km/s, {:.2} AU from a {:.0} K star ({:?} view)",
         planet.kind,
         v_circ * C_KM_S,
         vec3::norm(off_km) / planets::AU_KM,
