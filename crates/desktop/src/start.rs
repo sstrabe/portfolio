@@ -4,7 +4,7 @@ use kerr::geodesic;
 use kerr::local;
 use kerr::pilot::Pilot;
 use kerr::planets::{self, C_KM_S, KM_PER_M, PlanetKind};
-use kerr::units::SECONDS_PER_M;
+use kerr::units::{PARSEC, SECONDS_PER_M};
 use kerr::vec3::{self, V3};
 use kerr::world::World;
 
@@ -15,6 +15,26 @@ pub enum Start {
     /// Next to the nearest planet of a kind (by default 420 km above an
     /// Earth-like world at dawn, looking at the sunrise over its limb).
     Planet(PlanetStart),
+    /// Facing one of the nebulae (`render_hq::nebula::landmarks`): from the
+    /// cluster start, or at rest `distance_pc` from it on the side facing
+    /// Earth.
+    Look { target: usize, distance_pc: Option<f64> },
+}
+
+impl Start {
+    /// Parse `--look NAME[@PC]`.
+    pub fn look(s: &str) -> Result<Self, String> {
+        let (name, distance_pc) = match s.split_once('@') {
+            Some((n, d)) => (n, Some(d.parse::<f64>().map_err(|e| format!("--look {s}: {e}"))?)),
+            None => (s, None),
+        };
+        let places = render_hq::nebula::landmarks();
+        let target = places
+            .iter()
+            .position(|(n, _)| *n == name)
+            .ok_or_else(|| format!("unknown nebula {name:?} (one of {})", places.map(|(n, _)| n).join(", ")))?;
+        Ok(Self::Look { target, distance_pc })
+    }
 }
 
 /// `planet[:KIND[:ALTITUDE[:VIEW]]]`, e.g. `planet:desert:2000:day` or
@@ -122,7 +142,29 @@ pub fn apply(world: &mut World, start: Start) -> Result<Option<String>, String> 
     match start {
         Start::Cluster => Ok(None),
         Start::Planet(p) => near_planet(world, p).map(Some),
+        Start::Look { target, distance_pc } => look_at(world, target, distance_pc).map(Some),
     }
+}
+
+/// Turn to face a nebula, first moving `distance_pc` from it towards Earth
+/// (at rest) if given. Galactic north is up.
+fn look_at(world: &mut World, target: usize, distance_pc: Option<f64>) -> Result<String, String> {
+    let (name, centre_pc) = render_hq::nebula::landmarks()[target];
+    let centre = vec3::scale(centre_pc, PARSEC);
+    let (pos, vel) = match distance_pc {
+        Some(d) => (vec3::axpy(centre, d * PARSEC, render_hq::nebula::earth_direction()), [0.0; 3]),
+        None => {
+            let u = world.pilot.e[0];
+            (world.pilot.position(), [u[1] / u[0], u[2] / u[0], u[3] / u[0]])
+        }
+    };
+    let look = vec3::sub(centre, pos);
+    let mut pilot =
+        Pilot::new(&world.kerr, pos, vel, look, render_hq::nebula::galactic().z).ok_or("could not place the ship")?;
+    pilot.x[0] = world.pilot.x[0];
+    pilot.tau = world.pilot.tau;
+    world.pilot = pilot;
+    Ok(format!("facing {name}, {:.2} pc away", vec3::norm(look) / PARSEC))
 }
 
 /// Put the ship on a circular orbit around the nearest planet matching

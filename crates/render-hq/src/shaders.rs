@@ -80,10 +80,26 @@ pub fn post() -> String {
     assemble(&[POST_PRELUDE, wgsl!("post.wgsl")])
 }
 
-pub fn all() -> [(&'static str, String); 8] {
+/// Startup generation of the nebula volumes (standalone: its own bindings
+/// at group 0).
+pub fn nebula_gen() -> String {
+    wgsl!("nebula_gen.wgsl").to_string()
+}
+
+/// The nebulae seen from inside the cluster, cached per direction (the trace
+/// sources plus `nebula_cube.wgsl`'s entry point).
+pub fn nebula_cube() -> String {
+    let mut s = trace();
+    s.push_str(wgsl!("nebula_cube.wgsl"));
+    s
+}
+
+pub fn all() -> [(&'static str, String); 10] {
     [
         ("trace", trace()),
+        ("nebula cube", nebula_cube()),
         ("atmosphere tables", atmosphere_tables()),
+        ("nebula_gen", nebula_gen()),
         ("taa", taa()),
         ("splat", splat()),
         ("psf", psf()),

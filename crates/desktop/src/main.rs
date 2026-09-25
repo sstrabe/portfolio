@@ -3,7 +3,7 @@
 //! portfolio stations or content.
 //!
 //! ```text
-//! kerr-nucleus [--stars N] [--fov DEG] [--scale S] [--start cluster|planet[:KIND[:ALTITUDE[:VIEW]]]]
+//! kerr-nucleus [--stars N] [--fov DEG] [--scale S] [--start cluster|planet[:KIND[:ALTITUDE[:VIEW]]]] [--look NEBULA[@PC]]
 //! kerr-nucleus --headless 1280x720 [--seconds S] [--out shot.png]
 //! kerr-nucleus [--optics eye|camera|astro] [--palette true|hubble] [--ev STOPS]
 //! ```
@@ -51,6 +51,8 @@ OPTIONS:
                                ringed or any (nearest of that kind)
                           ALTITUDE km, or planet radii with an r suffix (2r)
                           VIEW dawn, day (sun glint), limb, nadir, night, disc
+    --look NEBULA[@PC]  Face a nebula (sgra, minispiral, cnd, sgra-east, pwn) instead;
+                        with @PC, from PC parsecs away on Earth's side, at rest
     --optics KIND       eye, camera (default) or astro (a telescope)
     --palette P         true (default) or hubble (narrowband [S II], Hα, [O III])
     --ev STOPS          Exposure compensation (astro: over its base exposure)
@@ -132,6 +134,7 @@ fn parse() -> Result<Options, String> {
             "--burn" => o.burn = true,
             "--autopilot" => o.autopilot = true,
             "--start" => o.start = value("--start")?.parse()?,
+            "--look" => o.start = start::Start::look(&value("--look")?)?,
             "--optics" => {
                 o.optics.optics = match value("--optics")?.as_str() {
                     "eye" => render_hq::optics::Optics::Eye,

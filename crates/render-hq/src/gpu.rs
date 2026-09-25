@@ -252,7 +252,7 @@ impl Gpu {
         });
         let near = NearField::new(&device);
         let atmo = Atmospheres::new(&device, &queue);
-        let nebula = Nebulae::new(&device, &queue);
+        let nebula = Nebulae::new(&device, &queue, &frame_buf);
         let ship = Ship::new(&device, &queue);
         let lens = Lensing::new(&device);
         let trace_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

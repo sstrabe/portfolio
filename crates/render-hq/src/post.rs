@@ -47,8 +47,9 @@ const FAINT_STAR_PEAK: f64 = 0.06;
 /// point source may reach under automatic exposure: bright stars glare
 /// white, ten magnitudes of fainter ones stay visible.
 const HIGHLIGHT: f32 = 600.0;
-/// The astrograph's base exposure, in stops above the dark-adapted eye.
-const ASTRO_STOPS: f64 = 4.0;
+/// The astrograph's exposure, in stops over the meter's reading of the
+/// scene's background.
+const ASTRO_STOPS: f64 = 2.0;
 /// Accumulated history weight (≈ frames) while moving, and at most when
 /// still.
 const HISTORY_MOVING: f32 = 8.0;
@@ -612,7 +613,7 @@ impl Post {
         let pixel = pixel_trace * trace.1 as f64 / t.out.1 as f64;
         let delta = pixel * t.grid.step as f64;
         let dark = self.dark_exposure(ctx.world, pixel);
-        let manual = if s.optics == Optics::Astro { dark * 2f64.powf(ASTRO_STOPS) } else { 0.0 };
+        let manual = if s.optics == Optics::Astro { 2f64.powf(ASTRO_STOPS) } else { 0.0 };
         let (tau_light, tau_dark) = match s.optics {
             Optics::Eye => (0.4, 3.0),
             _ => (0.25, 0.8),

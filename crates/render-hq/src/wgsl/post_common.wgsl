@@ -23,7 +23,7 @@ struct PostFrame {
     taa2: vec4<f32>,      // clipping box half-width (σ), unused ×3
     mode: vec4<u32>,      // optics (0 eye, 1 camera, 2 astro), palette (0 true, 1 SHO), ghosts, snap
     expo: vec4<f32>,      // exposure multiplier, min exposure, dark-adapted max exposure, dt (s)
-    expo2: vec4<f32>,     // manual exposure (0: automatic), light τ (s), dark τ (s), fifth-brightest point's peak display value
+    expo2: vec4<f32>,     // astrograph gain over the metered background (0: automatic), light τ (s), dark τ (s), fifth-brightest point's peak display value
     optics: vec4<f32>,    // core σ (rad), output pixel angle (rad), grid pixel angle (rad), unused
     sho: vec4<f32>,       // Hubble palette gains for [S II], Hα, [O III]; unused
     ghosts: array<vec4<f32>, 16>,  // pairs: (k, radius rad, rotation, unused), (tint rgb, unused)

@@ -68,7 +68,7 @@ impl Optics {
         match self {
             Self::Eye => Pupil::Disc,
             Self::Camera => Pupil::Polygon { blades: 7, rotation: 0.3 },
-            Self::Astro => Pupil::Telescope { obstruction: 0.33, vane: 0.025 },
+            Self::Astro => Pupil::Telescope { obstruction: 0.33, vane: 0.01 },
         }
     }
 

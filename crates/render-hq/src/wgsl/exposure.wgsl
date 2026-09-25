@@ -22,7 +22,7 @@
 // Bounds: never more exposure than the dark-adapted limit (the faintest
 // visible star just visible). Adaptation runs in log space: quickly toward
 // brighter light, slowly toward darkness (rods take minutes; shortened for
-// flight). The astrograph uses a fixed exposure instead.
+// flight). The astrograph meters the background only and exposes longer.
 // ---------------------------------------------------------------------------
 
 @group(0) @binding(3) var<storage, read_write> expo: Exposure;
@@ -152,7 +152,9 @@ fn cs_exposure(@builtin(local_invocation_index) li: u32) {
     }
     target_value = clamp(target_value, pf.expo.y, pf.expo.z) * pf.expo.x;
     if (pf.expo2.x > 0.0) {
-        target_value = pf.expo2.x * pf.expo.x;
+        // Astrograph: expose for the faint background, `pf.expo2.x` times
+        // longer than the meter says, and let the stars burn out.
+        target_value = clamp(key / lavg, pf.expo.y, pf.expo.z) * pf.expo2.x * pf.expo.x;
     }
     var v = target_value;
     if (pf.mode.w == 0u && expo.value > 0.0) {
