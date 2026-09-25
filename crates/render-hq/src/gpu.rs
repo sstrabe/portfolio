@@ -12,6 +12,7 @@ use crate::atmosphere::Atmospheres;
 use crate::lens::Lensing;
 use crate::near::NearField;
 use crate::nebula::Nebulae;
+use crate::overlay::Overlay;
 use crate::post::{self, Post};
 use crate::ship::Ship;
 use crate::{FrameContext, HqUniforms, shaders};
@@ -74,6 +75,8 @@ pub struct Gpu {
     pub ship: Ship,
     pub lens: Lensing,
     pub post: Post,
+    /// HUD and map drawn over the image (filled by the app each frame).
+    pub overlay: Overlay,
 
     hdr: Option<Hdr>,
     capture: Arc<Mutex<Capture>>,
@@ -276,6 +279,7 @@ impl Gpu {
             compilation_options: Default::default(),
             cache: None,
         });
+        let overlay = Overlay::new(&device, &queue, out_format);
         let post = Post::new(
             &device,
             &queue,
@@ -310,6 +314,7 @@ impl Gpu {
             ship,
             lens,
             post,
+            overlay,
             hdr: None,
             capture: Arc::default(),
         })
@@ -465,20 +470,7 @@ impl Gpu {
         self.lens.update(&ctx);
         self.post.update(&ctx);
 
-        let (frame, out_view) = match &self.output {
-            Output::Surface { surface, config } => match surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
-                    let view = t.texture.create_view(&Default::default());
-                    (Some(t), view)
-                }
-                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                    surface.configure(&self.device, config);
-                    return;
-                }
-                _ => return,
-            },
-            Output::Offscreen { texture, .. } => (None, texture.create_view(&Default::default())),
-        };
+        let Some((frame, out_view)) = self.acquire() else { return };
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         self.atmo.encode(&mut enc, &ctx);
         self.nebula.encode(&mut enc, &ctx);
@@ -505,6 +497,8 @@ impl Gpu {
             pass.dispatch_workgroups(w.div_ceil(TRACE_TILE), h.div_ceil(TRACE_TILE), 1);
         }
         self.post.encode(&mut enc, &out_view);
+        let size = self.output_size();
+        self.overlay.encode(&self.queue, &mut enc, &out_view, size);
         self.encode_capture(&mut enc);
         self.queue.submit([enc.finish()]);
         // Deliver finished read-backs (exposure) without waiting.
@@ -513,6 +507,59 @@ impl Gpu {
             self.queue.present(frame);
         }
         self.frame_index = self.frame_index.wrapping_add(1);
+    }
+
+    /// Draw only the overlay, on a plain background (the map view): none of
+    /// the scene's passes run.
+    pub fn render_overlay(&mut self, background: [f64; 3]) {
+        let Some((frame, out_view)) = self.acquire() else { return };
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("overlay") });
+        let [r, g, b] = background;
+        let pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("background"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &out_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a: 1.0 }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        drop(pass);
+        let size = self.output_size();
+        self.overlay.encode(&self.queue, &mut enc, &out_view, size);
+        self.encode_capture(&mut enc);
+        self.queue.submit([enc.finish()]);
+        let _ = self.device.poll(wgpu::PollType::Poll);
+        if let Some(frame) = frame {
+            self.queue.present(frame);
+        }
+        self.frame_index = self.frame_index.wrapping_add(1);
+    }
+
+    /// The texture to draw this frame into (and the surface texture to
+    /// present), or `None` when the surface has to be set up again.
+    fn acquire(&self) -> Option<(Option<wgpu::SurfaceTexture>, wgpu::TextureView)> {
+        match &self.output {
+            Output::Surface { surface, config } => match surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
+                    let view = t.texture.create_view(&Default::default());
+                    Some((Some(t), view))
+                }
+                wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                    surface.configure(&self.device, config);
+                    None
+                }
+                _ => None,
+            },
+            Output::Offscreen { texture, .. } => Some((None, texture.create_view(&Default::default()))),
+        }
     }
 
     /// Headless: ask for the next frame's pixels (RGBA8, sRGB encoded).

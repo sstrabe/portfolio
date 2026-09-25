@@ -137,32 +137,51 @@ cargo run -p desktop --release -- --look pwn@5 --optics astro --palette hubble
 cargo run -p desktop --release -- --headless 1280x720 --near-hole 50 --out hole.png
 ```
 
-Controls:
-- Click to steer with the mouse. Right looks right, down looks down; `I`
-  inverts up/down, and `Esc` releases the mouse.
-- `W`/`S`, `A`/`D`, `Space`/`C` thrust; arrow keys turn; `Q`/`E` roll.
-- `Shift` boosts, and `X` brakes to the local rest frame (the planet or star
-  whose gravity dominates, else the hole's frame).
-- `[` / `]` or the mouse wheel scale the throttle by 10. Full throttle is
-  17,000 g; near a planet the throttle resets to the power of ten just above
-  its surface gravity, and back to full away from it.
+Controls work like Kerbal Space Program's (`F1` lists them in the window):
+- `W`/`S` pitch (`W` puts the nose down), `A`/`D` yaw, `Q`/`E` roll. The
+  ship turns with inertia. SAS (`T`) stops it turning, and `1`–`9` make SAS
+  hold the nose on attitude, prograde, retrograde, normal, anti-normal,
+  radial out, radial in, the target or away from it.
+- The main engine has a throttle that stays where you set it: `Shift` /
+  `Ctrl` open and close it, `Z` is full and `X` cuts it. `[` / `]` scale
+  the engine's thrust limit by 10. At a limit of 1, full throttle is
+  35,000 g; near a planet the limit resets to the power of ten just above
+  its surface gravity, and back to 1 away from it.
+- `R` toggles RCS: `H`/`N` forward/back, `J`/`L` left/right, `I`/`K` up/down.
+- `B` (held) brakes to the local rest frame: the planet or star whose
+  gravity dominates, else the hole's frame.
 - `O` flies to the targeted (else nearest) planet and into a circular orbit
-  above its atmosphere, warping time on the way. `O` again or any thrust
+  above its atmosphere, warping time on the way. `O` again or the throttle
   takes over. `Tab` targets the next planet of the system.
-- `,` / `.` halve or double the time warp. Near a body it is capped so an
-  orbit takes at least 5 s.
-- `V` switches between first person and the chase camera.
-- `P` cycles the optics: eye, camera, astrograph (telescope). `H` toggles
+- `M` opens the map: the cluster, the star systems (ringed stars have
+  planets) and your orbit. Right drag turns it, the wheel zooms from low
+  orbit out to the whole cluster, `F` cycles the focus, clicking a planet
+  targets it, and double-clicking centres on anything.
+- `,` / `.` halve or double the time warp, and `/` returns to real time.
+  Near a body the warp is capped so an orbit takes at least 5 s.
+- `V` switches between first person and the chase camera; right drag turns
+  the chase camera and the wheel zooms it. `Home` resets the camera or map.
+- `P` cycles the optics: eye, camera, astrograph (telescope). `Y` toggles
   the Hubble palette. `PageUp` / `PageDown` change the exposure by a stop,
   `Backspace` resets it.
-- `F11` toggles fullscreen and `Ctrl+Q` quits.
+- `F2` hides the HUD, `F11` toggles fullscreen and `Ctrl+Q` quits.
+
+The HUD shows what the ship is doing relative to the body whose gravity
+dominates (a planet inside its Hill sphere, a star whose field reaches you,
+else Sgr A*): altitude, speed, periapsis, apoapsis and period, and the
+target. The navball has the ship's nose in the middle, that body's horizon,
+and the prograde, normal, radial and target markers. Prograde, retrograde,
+the target, the local star and Sgr A* are marked over the view too. At high
+speed the stars crowd towards prograde (aberration), which can make it look
+as if you are flying backwards; the prograde marker shows which way you
+really move.
 
 Stars and planets pull on the ship (Newtonian gravity on top of the Kerr
 geodesic). Flying into a planet lands you on it; thrust lifts off. Flying
 into a star puts you back outside it. `--start planet` begins in a 420 km
 orbit around an Earth-like world, heading into the sunrise.
 
-Telemetry is in the window title. The ray-tracing resolution adapts between
+The ray-tracing resolution adapts between
 50% and 100% unless you pass `--scale`. Set `WGPU_BACKEND=vulkan|metal|dx12`
 to pick a backend. CI builds binaries for Linux, Windows and macOS as
 workflow artifacts.

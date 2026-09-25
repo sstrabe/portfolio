@@ -9,9 +9,11 @@
 //! ```
 
 mod app;
+mod flight;
 mod headless;
 mod hud;
 mod input;
+mod map;
 mod start;
 
 use kerr::world::World;
@@ -34,6 +36,10 @@ pub struct Options {
     pub autopilot: bool,
     /// Start with the chase camera (the ship in view).
     pub chase: bool,
+    /// Headless: draw the HUD, the map, the list of controls.
+    pub hud: bool,
+    pub map: bool,
+    pub help: bool,
     pub start: start::Start,
     pub optics: render_hq::post::Settings,
 }
@@ -71,24 +77,46 @@ OPTIONS:
     --burn              Headless: thrust forward with boost during the flight
     --autopilot         Headless: fly into orbit around the nearest planet
     --chase             Start with the chase camera (the ship in view)
+    --hud               Headless: draw the HUD over the shot
+    --map               Headless: shoot the map instead
+    --help-overlay      Headless: draw the list of controls
     -h, --help          Show this help
 
-CONTROLS:
-    Click to steer with the mouse (Esc releases it), I inverts mouse Y.
-    W/S thrust, A/D strafe, Space/C up/down, arrows turn, Q/E roll,
-    Shift boost (5x), X brake (to the local rest frame: the planet or star
-    whose gravity dominates, else the hole's frame),
-    [ / ] or the mouse wheel: throttle down / up by 10x (the engine gives
-    17,000 g at full throttle; near a planet the throttle resets to a
-    power of ten above its surface gravity, and back to full away from it),
+CONTROLS (like Kerbal Space Program; F1 shows them in the window):
+    W/S pitch (W: nose down), A/D yaw, Q/E roll. The ship turns with
+    inertia; SAS (T) stops it turning, and 1-9 make SAS hold the nose on:
+    1 attitude, 2 prograde, 3 retrograde, 4 normal, 5 anti-normal,
+    6 radial out, 7 radial in, 8 target, 9 anti-target.
+    Shift/Ctrl throttle up/down, Z full, X cut. [ / ] divide or multiply
+    the engine's thrust limit by 10 (at the limit of 1, full throttle is
+    35,000 g; near a planet the limit resets to a power of ten above its
+    surface gravity, and back to 1 away from it).
+    R toggles RCS: H/N forward/back, J/L left/right, I/K up/down.
+    B (hold) brakes to the local rest frame: the planet or star whose
+    gravity dominates, else the hole's frame.
     O orbit autopilot: fly to the targeted (else nearest) planet and into a
-    circular orbit above its atmosphere; O again or any thrust takes over,
-    Tab target the next planet of the system,
+    circular orbit above its atmosphere; O again or the throttle takes over.
+    Tab targets the next planet of the system.
+    M map: right drag turns it, the wheel zooms, F cycles the focus (ship,
+    the body you orbit, the target, its star, the hole), a click on a planet
+    targets it, a double click centres on anything, Home resets it.
+    V chase camera / first person (right drag turns the chase camera, the
+    wheel zooms it, Home resets it).
     , / . halve / double the time warp (near a body it is capped so an
-    orbit takes at least 5 s), F11 fullscreen, Ctrl+Q quit.
-    V chase camera / first person; P cycles eye, camera and astrograph; H toggles the Hubble palette;
+    orbit takes at least 5 s), / back to real time.
+    P cycles eye, camera and astrograph; Y toggles the Hubble palette;
     PageDown / PageUp exposure down / up a stop; Backspace resets it.
-    Telemetry is shown in the window title.
+    F2 hides the HUD, F11 fullscreen, Esc closes the help or the map,
+    Ctrl+Q quits.
+
+HUD:
+    Top left: what the ship is doing and its orbit around the body whose
+    gravity dominates (a planet inside its Hill sphere, a star whose field
+    reaches the ship, else Sgr A*), and the target. The navball shows the
+    ship's nose in the middle, that body's horizon, and the prograde (yellow),
+    normal (purple), radial (cyan) and target (pink) markers; prograde,
+    retrograde, the target, the local star and Sgr A* are also marked over
+    the view. At high speed aberration crowds the stars towards prograde.
 
 PLANETS:
     Stars and planets pull on the ship with Newtonian gravity added to the
@@ -118,6 +146,9 @@ fn parse() -> Result<Options, String> {
         burn: false,
         autopilot: false,
         chase: false,
+        hud: false,
+        map: false,
+        help: false,
         start: start::Start::Cluster,
         optics: Default::default(),
     };
@@ -148,6 +179,9 @@ fn parse() -> Result<Options, String> {
             "--burn" => o.burn = true,
             "--autopilot" => o.autopilot = true,
             "--chase" => o.chase = true,
+            "--hud" => o.hud = true,
+            "--map" => o.map = true,
+            "--help-overlay" => o.help = true,
             "--start" => o.start = value("--start")?.parse()?,
             "--look" => o.start = start::Start::look(&value("--look")?)?,
             "--optics" => {

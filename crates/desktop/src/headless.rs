@@ -1,7 +1,9 @@
 //! Offscreen rendering to a PNG: `--headless WIDTHxHEIGHT`.
 
 use crate::Options;
+use crate::flight::{self, Nav};
 use crate::input::Controls;
+use crate::map::Map;
 use render_hq::{Gpu, Session};
 
 pub fn run(o: &Options) -> Result<(), String> {
@@ -26,24 +28,46 @@ pub fn run(o: &Options) -> Result<(), String> {
     s.gpu.set_render_scale(o.scale.unwrap_or(1.0));
 
     let mut controls = Controls::default();
+    let mut map = Map::default();
     let dt = 1.0 / 60.0;
     let frames = (o.seconds / dt).round().max(1.0) as usize;
-    for _ in 0..frames {
-        let mut input = controls.sample(dt);
+    for i in 0..=frames {
+        let nav = Nav::new(&s.world);
+        let hold = if controls.sas { nav.hold(controls.sas_mode) } else { None };
+        let mut input = controls.sample(dt, hold);
         if o.burn {
             input.thrust = [1.0, 0.0, 0.0];
             input.boost = true;
         }
-        s.frame(dt, &input);
+        s.advance(dt, &input);
+        s.gpu.ship.power = if o.burn { 1.0 } else { controls.throttle };
         for note in s.events().iter().filter_map(|e| crate::hud::note(&s.world, e)) {
             println!("{note}");
+        }
+        // The last frame is the shot.
+        let last = i == frames;
+        if last {
+            s.gpu.request_capture();
+            let nav = Nav::new(&s.world);
+            let view = s.view();
+            let Session { world, gpu, .. } = &mut s;
+            if o.map {
+                map.open(&nav);
+                map.draw(&mut gpu.overlay, world, &nav, view.size, 1.0, None);
+            }
+            if o.hud || o.map {
+                let extras = flight::Extras { fps: 60.0, note: None, help: o.help, map: o.map };
+                flight::draw(&mut gpu.overlay, world, &nav, &controls, &view, 1.0, &extras);
+            }
+        }
+        if last && o.map {
+            s.gpu.render_overlay(Map::background());
+        } else {
+            s.render();
         }
         // Keep the GPU from queueing up an unbounded amount of work.
         s.gpu.wait();
     }
-    s.gpu.request_capture();
-    s.frame(dt, &controls.sample(dt));
-    s.gpu.wait();
     let raw = s.gpu.take_capture().ok_or("capture failed")?;
     let (cw, ch) =
         (u32::from_le_bytes(raw[0..4].try_into().unwrap()), u32::from_le_bytes(raw[4..8].try_into().unwrap()));
@@ -54,7 +78,8 @@ pub fn run(o: &Options) -> Result<(), String> {
     enc.write_header().and_then(|mut wr| wr.write_image_data(&raw[8..])).map_err(|e| format!("png: {e}"))?;
     let t = s.world.telemetry();
     println!("wrote {} ({cw}x{ch}) at τ = {:.1} M, t = {:.1} M, r = {:.2} M", o.out, t.tau, t.t, t.r);
-    let mut line = format!("×{:.0} warp · {}", t.warp, crate::hud::throttle(&t));
+    let nav = Nav::new(&s.world);
+    let mut line = format!("{} · {:.0}x warp · {}", nav.situation(&s.world), t.warp, crate::hud::throttle(&t));
     if let Some(p) = &t.planet {
         line = format!("{} · {line}", crate::hud::planet(&s.world, p));
     }

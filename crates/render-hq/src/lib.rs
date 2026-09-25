@@ -16,6 +16,7 @@ pub mod lens;
 pub mod near;
 pub mod nebula;
 pub mod optics;
+pub mod overlay;
 pub mod post;
 pub mod profile;
 pub mod session;

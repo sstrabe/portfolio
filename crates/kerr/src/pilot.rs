@@ -259,6 +259,26 @@ impl Pilot {
         [k.dot(p, v, self.e[1]), k.dot(p, v, self.e[2]), k.dot(p, v, self.e[3])]
     }
 
+    /// Ship-frame direction (forward, left, up) in which something at
+    /// coordinate offset `d` from the ship appears. Its light is taken to
+    /// arrive straight (no lensing); the ship's motion aberrates it, so
+    /// at high speed everything crowds towards the direction of motion.
+    pub fn sky_direction(&self, k: &Kerr, d: V3) -> V3 {
+        let p = self.position();
+        let n = vec3::normalize(d);
+        let g = k.metric(p);
+        // The photon's 4-momentum is (kt, −n) with g(k, k) = 0 and kt > 0.
+        let a = g[0][0];
+        let b = -2.0 * (0..3).map(|i| g[0][i + 1] * n[i]).sum::<f64>();
+        let c: f64 = (0..3).flat_map(|i| (0..3).map(move |j| (i, j))).map(|(i, j)| g[i + 1][j + 1] * n[i] * n[j]).sum();
+        let disc = b * b - 4.0 * a * c;
+        let kt = if a < 0.0 && disc >= 0.0 { (-b - disc.sqrt()) / (2.0 * a) } else { 1.0 };
+        let kv = [kt, -n[0], -n[1], -n[2]];
+        // It travels along +p in the ship frame; the source lies along −p.
+        let dir = [-k.dot(p, kv, self.e[1]), -k.dot(p, kv, self.e[2]), -k.dot(p, kv, self.e[3])];
+        vec3::normalize(dir)
+    }
+
     /// Velocity of a body with 4-velocity `w` (at the ship's event)
     /// measured in the ship frame.
     pub fn relative_velocity(&self, k: &Kerr, w: V4) -> V3 {
@@ -357,6 +377,22 @@ mod tests {
                 assert!((d - expect).abs() < 1e-9, "e{a}·e{b} = {d}");
             }
         }
+    }
+
+    /// Far from the hole a ship moving at 0.6c sees a source that is
+    /// abeam in the hole's frame at cos θ' = v, ahead of abeam.
+    #[test]
+    fn sky_direction_aberrates() {
+        let k = Kerr::new(1.0, 0.9);
+        let pos = [0.0, 0.0, 1.0e8];
+        let pilot = Pilot::new(&k, pos, [0.6, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]).unwrap();
+        let abeam = pilot.sky_direction(&k, [0.0, 1.0e3, 0.0]);
+        assert!((abeam[0] - 0.6).abs() < 1e-6, "{abeam:?}");
+        let ahead = pilot.sky_direction(&k, [5.0, 0.0, 0.0]);
+        assert!((ahead[0] - 1.0).abs() < 1e-9, "{ahead:?}");
+        let rest = Pilot::new(&k, pos, [0.0; 3], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]).unwrap();
+        let d = rest.sky_direction(&k, [1.0, 2.0, -2.0]);
+        assert!(vec3::norm(vec3::sub(d, rest.local_components(&k, [1.0, 2.0, -2.0]).map(|x| x / 3.0))) < 1e-6, "{d:?}");
     }
 
     #[test]

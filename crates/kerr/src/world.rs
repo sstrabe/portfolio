@@ -268,6 +268,30 @@ pub struct Telemetry {
     pub autopilot: Option<&'static str>,
 }
 
+/// The body speeds, orbits and flight markers are measured against: the
+/// one whose gravity dominates at the ship.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Reference {
+    Hole,
+    Star(usize),
+    Planet(PlanetRef),
+}
+
+/// The ship relative to its [`Reference`].
+#[derive(Clone, Copy, Debug)]
+pub struct Relative {
+    pub reference: Reference,
+    /// Coordinate position and velocity relative to the body's centre
+    /// (units of M and c).
+    pub offset: V3,
+    pub velocity: V3,
+    /// The body's `GM` and radius, units of M.
+    pub mu: f64,
+    pub radius: f64,
+    /// The ship's velocity relative to the body, in the ship frame.
+    pub ship_velocity: V3,
+}
+
 /// The ship relative to a planet.
 #[derive(Clone, Copy, Debug)]
 pub struct PlanetTelemetry {
@@ -968,12 +992,59 @@ impl World {
             }
             None => self.nearest_planet()?,
         };
-        self.planet_target = Some(next);
+        self.set_target(next).then_some(next)
+    }
+
+    /// Target planet `p` (picked on the map, say), if its star still
+    /// exists. Retargets a flying autopilot.
+    pub fn set_target(&mut self, p: PlanetRef) -> bool {
+        if !self.valid(p) {
+            return false;
+        }
+        self.planet_target = Some(p);
         self.local_until = f64::NEG_INFINITY;
         if matches!(self.status, PilotStatus::Orbit(_)) {
-            self.engage(next);
+            self.engage(p);
         }
-        Some(next)
+        true
+    }
+
+    /// The ship relative to the body whose gravity dominates where it is:
+    /// a planet inside its Hill sphere, a star whose field reaches the
+    /// ship, else the hole (seen by the normal observer of the
+    /// `t = const` slicing).
+    pub fn reference(&self) -> Relative {
+        let (t, pos) = (self.pilot.x[0], self.pilot.position());
+        let u = self.pilot.e[0];
+        let v = [u[1] / u[0], u[2] / u[0], u[3] / u[0]];
+        let ship_velocity = |w: V4| vec3::scale(self.pilot.relative_velocity(&self.kerr, w), -1.0);
+        if let Some(l) = self.local.as_ref().filter(|l| self.cfg.local_gravity && l.reaches(t, pos)) {
+            let (body, _) = l.dominant(t, pos);
+            let (x, vb) = l.body_state(body, t);
+            let (mu, radius) = l.mass_of(body);
+            let reference = match body {
+                BodyRef::Star => Reference::Star(l.star),
+                BodyRef::Planet(i) => Reference::Planet(l.planet_ref(i)),
+            };
+            if let Some(w) = self.kerr.four_velocity(pos, vb) {
+                return Relative {
+                    reference,
+                    offset: vec3::sub(pos, x),
+                    velocity: vec3::sub(v, vb),
+                    mu,
+                    radius,
+                    ship_velocity: ship_velocity(w),
+                };
+            }
+        }
+        Relative {
+            reference: Reference::Hole,
+            offset: pos,
+            velocity: v,
+            mu: self.kerr.m,
+            radius: self.kerr.r_plus(),
+            ship_velocity: ship_velocity(self.normal_observer()),
+        }
     }
 
     /// Engage the orbit autopilot on the target (or the nearest planet),
@@ -1499,6 +1570,24 @@ mod tests {
         // Semi-major axis (energy) and period drift.
         assert!((t.period_s / t0.period_s - 1.0).abs() < 1e-5, "period {} -> {}", t0.period_s, t.period_s);
         eprintln!("4 orbits: altitude {lo:.2}..{hi:.2} km, period {:.3} -> {:.3} s", t0.period_s, t.period_s);
+    }
+
+    /// In low orbit speeds are measured against the planet; the ship's
+    /// velocity in its own frame matches the orbital speed.
+    #[test]
+    fn reference_is_the_dominant_body() {
+        let (mut w, p) = planet_world();
+        assert_eq!(w.reference().reference, Reference::Hole);
+        let (r, v) = circular(&w, p, 300.0);
+        put_near(&mut w, p, r, v);
+        w.step(1.0 / 60.0, &Input { autopilot: -1, ..Default::default() });
+        let rel = w.reference();
+        assert_eq!(rel.reference, Reference::Planet(p));
+        let speed = vec3::norm(v);
+        assert!((vec3::norm(rel.velocity) / speed - 1.0).abs() < 1e-3);
+        assert!((vec3::norm(rel.ship_velocity) / speed - 1.0).abs() < 1e-3);
+        // Facing along the velocity: prograde is dead ahead.
+        assert!(rel.ship_velocity[0] / vec3::norm(rel.ship_velocity) > 0.999);
     }
 
     #[test]

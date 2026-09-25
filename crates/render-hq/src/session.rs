@@ -5,6 +5,7 @@ use crate::gpu::Gpu;
 use crate::{HQ_NARROWBAND, HqUniforms, spectrum};
 use kerr::planets::{C_KM_S, KM_PER_M, SUN_LUMINOSITY_W};
 use kerr::units::{METRES_PER_M, SECONDS_PER_M};
+use kerr::vec3::{self, V3};
 use kerr::world::{Input, World, WorldEvent};
 use render::frame;
 
@@ -42,12 +43,24 @@ impl Session {
         s
     }
 
-    /// Advance by `wall_dt` seconds of wall-clock time and render.
+    /// Advance by `wall_dt` seconds of wall-clock time and render, the
+    /// drive glowing with the commanded thrust.
     pub fn frame(&mut self, wall_dt: f64, input: &Input) {
+        self.advance(wall_dt, input);
+        let thrust = input.thrust.iter().map(|x| x * x).sum::<f64>().sqrt().min(1.0);
+        self.gpu.ship.power = thrust * if input.boost { 1.0 } else { 0.4 };
+        self.render();
+    }
+
+    /// Advance the world by `wall_dt` seconds of wall-clock time.
+    pub fn advance(&mut self, wall_dt: f64, input: &Input) {
         self.wall_time += wall_dt;
         self.world.step(wall_dt, input);
         self.sync_history();
+    }
 
+    /// Render the world as it is now (with whatever the overlay holds).
+    pub fn render(&mut self) {
         let params = frame::FrameParams {
             fov_deg: self.fov_deg,
             exposure: 1.0,
@@ -67,9 +80,6 @@ impl Session {
         let view = self.gpu.ship.camera.view_tetrad(&self.world.pilot.e);
         let e = |v: [f64; 4]| v.map(|x| x as f32);
         (built.uniforms.e1, built.uniforms.e2, built.uniforms.e3) = (e(view[1]), e(view[2]), e(view[3]));
-        // Drive glow follows the commanded thrust.
-        let thrust = input.thrust.iter().map(|x| x * x).sum::<f64>().sqrt().min(1.0);
-        self.gpu.ship.power = thrust * if input.boost { 1.0 } else { 0.4 };
         self.gpu.write_frame(&built.uniforms);
         crate::lens::mark_shadows(&self.world, &mut built.meta);
         self.gpu.write_meta(&built.meta);
@@ -97,6 +107,15 @@ impl Session {
             rgb: spectrum::rgb_weight_rows(),
         };
         self.gpu.render(&self.world, &view, hq, self.wall_time);
+    }
+
+    /// How ship-frame directions map to the output image this frame.
+    pub fn view(&self) -> View {
+        View {
+            axes: self.gpu.ship.camera.pose().axes,
+            tan_half: (self.fov_deg.to_radians() * 0.5).tan(),
+            size: self.gpu.output_size(),
+        }
     }
 
     /// What happened during the last frame.
@@ -160,5 +179,31 @@ impl Session {
         let cluster = &self.world.cluster;
         let now: Vec<_> = (0..cluster.len()).map(|i| cluster.current_sample(i)).collect();
         self.gpu.write_history_column(self.gpu.history_cap(), &now);
+    }
+}
+
+/// The view's orientation and field, for placing things over the image.
+#[derive(Clone, Copy, Debug)]
+pub struct View {
+    /// The view's axes (forward, left, up) in the ship frame.
+    pub axes: [V3; 3],
+    pub tan_half: f64,
+    /// Output size, pixels.
+    pub size: (u32, u32),
+}
+
+impl View {
+    /// Components along the view's axes of a ship-frame direction: the
+    /// same in first person, turned for the chase camera.
+    pub fn to_view(&self, dir: V3) -> V3 {
+        self.axes.map(|a| vec3::dot(dir, a))
+    }
+
+    /// Output pixel at which a ship-frame direction appears, or `None`
+    /// when it is behind the view.
+    pub fn project(&self, dir: V3) -> Option<[f32; 2]> {
+        let (w, h) = (self.size.0 as f64, self.size.1.max(1) as f64);
+        let [x, y] = frame::project(self.to_view(dir), self.tan_half, w / h)?;
+        Some([((x + 1.0) * 0.5 * w) as f32, ((1.0 - y) * 0.5 * h) as f32])
     }
 }

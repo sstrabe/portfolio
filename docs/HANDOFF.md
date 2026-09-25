@@ -121,9 +121,13 @@ cargo test --workspace --release
 - Environment: `KERR_GPU_TIMING=1` (per-pass GPU times after a headless run),
   `KERR_DEBUG_NAN=1`, `KERR_ATMO=off|noclouds`, `KERR_NEBULAE=0`,
   `KERR_NEBULA_CUBE=0`, `WGPU_BACKEND=vulkan|dx12`.
-- Keys: see `--help` and the README (flight: `O` orbit autopilot, `Tab`
-  target, `[`/`]` throttle; view: `V` chase camera, `P` optics, `H` Hubble
-  palette, `PageUp`/`PageDown`/`Backspace` exposure).
+- Keys: KSP-style flight controls, listed by `F1` in the window, `--help`
+  and the README (`W`/`S` pitch, `A`/`D` yaw, `Q`/`E` roll, `T` SAS and
+  `1`–`9` its hold modes, `Shift`/`Ctrl`/`Z`/`X` throttle, `[`/`]` thrust
+  limit, `R` RCS on `H`/`N`/`J`/`L`/`I`/`K`, `B` brake, `O` orbit autopilot,
+  `Tab` target, `M` map, `V` chase camera, `P` optics, `Y` Hubble palette).
+- Headless `--hud`, `--map` and `--help-overlay` draw the HUD, shoot the map
+  or show the controls list, for checking them without a window.
 
 **Performance** (RTX 3060 Laptop): the window holds 55–67 fps at its default
 size with the adaptive trace resolution (0.5–1) and TAA upscaling. At native
@@ -160,8 +164,15 @@ march). The post chain is ~2 ms.
 
 ## 5. Open feedback and known limitations
 
-1. **Inverted controls:** FPS mouse-look plus `I`. Which axis felt wrong was
-   never confirmed; ask when the owner flies.
+1. **"W/S reversed" and "hard to know where you are":** the thrust sign was
+   right; at high γ aberration crowds the stars towards the direction of
+   motion, which reads as flying backwards. Answered with KSP-style controls
+   (rotation with inertia and SAS hold modes, a persistent throttle, RCS),
+   a HUD (navball with prograde/normal/radial/target markers, markers over
+   the view, orbit readouts relative to the dominant body) and a map (`M`).
+   Not yet flown by the owner: ask how it feels (turn rate and angular
+   acceleration are `SPIN_ACCEL`/`TURN_RATE` in `input.rs`, engine and RCS
+   strength `ENGINE`/`RCS`).
 2. **"You can't see what you are":** done (the ship and `V`).
 3. **Land colours** on ocean worlds lean pinkish-tan; vegetation cover could
    be greener. Tuning in `planet.wgsl` (`material_ocean_world`).
@@ -200,6 +211,7 @@ yards", and a detailed design followed (`docs/planets.md`). Status:
 | Nebulae at real positions, cube-map cache | done |
 | Ship: mesh, chase camera, PBR, shadows | done (software BVH) |
 | Stellar-mass hole lensing | done |
+| KSP-style controls, HUD with navball, map view (`render-hq/src/overlay.rs` draws both) | done |
 | RT-core terrain and ship, surface maps, 200–1600 nm atmosphere tables, presets (Mars, Venus, Titan, Jupiter, Neptune) | not started |
 
 Suggested next steps, in order: fly it in the window with the owner and
@@ -221,8 +233,10 @@ crates/render-hq   desktop renderer: gpu.rs, session.rs, near.rs, atmosphere.rs,
                    ship/, lens.rs, post.rs, optics.rs, fft.rs, spectrum.rs, profile.rs,
                    shaders.rs, wgsl/
 crates/engine      wasm-bindgen wrapper for the web
-crates/desktop     main.rs (options), app.rs (window, keys), input.rs, hud.rs (title
-                   telemetry), start.rs (--start, --look), headless.rs
+crates/desktop     main.rs (options), app.rs (window, events), input.rs (KSP-style
+                   controls, SAS), flight.rs (HUD: navball, markers, readouts, help),
+                   map.rs (map view), hud.rs (names and numbers), start.rs (--start,
+                   --look), headless.rs
 web/               Vite + TS front end
 docs/              physics.md, planets.md, this file
 ```
