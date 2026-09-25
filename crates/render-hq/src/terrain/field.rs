@@ -9,6 +9,7 @@
 //! resident ancestor while it is still missing.
 
 use super::anchor::Anchor;
+use super::ground::GroundCache;
 use super::maps::MapKey;
 use super::tilegen::{self, Surface, TileGen};
 use super::tiles::{self, TileId};
@@ -47,12 +48,20 @@ pub struct TerrainField {
     /// What to draw this frame: tiles and their atlas layers.
     pub drawn: Vec<(TileId, u32)>,
     pub stats: FieldStats,
+    /// The ground around the eye on the CPU (for landing and walking).
+    pub ground: GroundCache,
 }
 
 impl TerrainField {
     /// `rt`: build BLASes and a TLAS of the drawn tiles.
     pub fn new(device: &wgpu::Device, rt: bool) -> Self {
-        Self { tile_gen: TileGen::new(device, rt), anchor: None, drawn: Vec::new(), stats: FieldStats::default() }
+        Self {
+            tile_gen: TileGen::new(device, rt),
+            anchor: None,
+            drawn: Vec::new(),
+            stats: FieldStats::default(),
+            ground: GroundCache::default(),
+        }
     }
 
     /// The anchor of the noise and of the TLAS (body-fixed km).
@@ -114,6 +123,7 @@ impl TerrainField {
             }
         }
         self.tile_gen.poll_ranges(device, queue);
+        self.ground.update(device, queue, key, &self.tile_gen, &self.drawn, vec3::normalize(eye_km));
         if let Some(accel) = &mut self.tile_gen.accel {
             let mut enc =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("terrain tlas") });

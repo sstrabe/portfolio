@@ -954,6 +954,36 @@ mod tests {
         println!("down: {:.4} m (tile surface {:.4} m below the eye)", hit.t_km * 1000.0, expected);
         assert!((hit.t_km as f64 * 1000.0 - expected).abs() < 0.01, "{} m vs {expected} m", hit.t_km * 1000.0);
         assert!(hits[1].is_none(), "a ray up hit {:?}", hits[1]);
+
+        // The CPU's ground (read back, on the traced triangles) agrees with
+        // rays cast straight down on the GPU, around the eye.
+        for _ in 0..10 {
+            field.update(&gpu.device, &gpu.queue, ((0, 0, i), planet), eye, 1e-3, None);
+        }
+        let anchor = field.anchor_km().unwrap();
+        let accel = field.tile_gen.accel.as_ref().unwrap();
+        let mut worst = 0.0f64;
+        for k in 0..16 {
+            let a = k as f64 * 0.4;
+            let d_km = 0.002 * k as f64;
+            let q = vec3::normalize(vec3::add(
+                site,
+                vec3::scale(
+                    vec3::add(vec3::scale(east, a.cos()), vec3::scale(north, a.sin())),
+                    d_km / planet.radius_km,
+                ),
+            ));
+            let Some(h) = field.ground.height_km(q) else { continue };
+            let from = vec3::sub(vec3::scale(q, planet.radius_km + h + 0.01), anchor);
+            let cast = accel.cast(&gpu.device, &gpu.queue, &[(from, vec3::scale(q, -1.0), 1.0)]);
+            let t = cast[0].expect("ground below").t_km as f64;
+            worst = worst.max((t - 0.01).abs());
+        }
+        // Within the finest tiles (under the eye) it's the same triangles;
+        // farther out the cache may hold a coarser tile than the one drawn,
+        // which differs by the finer octaves' millimetres.
+        println!("CPU ground vs GPU rays out to 30 m: worst {:.3} mm", worst * 1e6);
+        assert!(worst < 1e-5, "{worst} km");
         for (k, h) in hits[2..].iter().enumerate() {
             println!(
                 "towards {:3}°, 1.1° down: {}",
