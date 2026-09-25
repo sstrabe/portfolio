@@ -64,6 +64,7 @@ const SHO_STRETCH: [f64; 3] = [2.2, 1.0, 2.6];
 struct PostFrame {
     reproject: [[f32; 4]; 4],
     reproject_ship: [[f32; 4]; 4],
+    reproject_terrain: [[f32; 4]; 4],
     sizes: [u32; 4],
     grid: [u32; 4],
     grid2: [u32; 4],
@@ -163,6 +164,9 @@ pub struct Post {
     parity: usize,
     prev_tetrad: Option<kerr::pilot::Tetrad>,
     prev_camera: Option<crate::ship::camera::Pose>,
+    /// The planet with terrain tiles last frame: its body axes in the view
+    /// axes, and the eye's body-fixed position (km).
+    prev_terrain: Option<([kerr::vec3::V3; 3], kerr::vec3::V3)>,
     still_frames: u32,
     last_wall: Option<f64>,
     snap_frames: u32,
@@ -327,6 +331,7 @@ impl Post {
             parity: 0,
             prev_tetrad: None,
             prev_camera: None,
+            prev_terrain: None,
             still_frames: 0,
             last_wall: None,
             snap_frames: 3,
@@ -609,6 +614,8 @@ impl Post {
         // camera moves relative to it (the chase camera orbited or zoomed).
         let ship_m = crate::ship::camera::reprojection(&self.prev_camera.unwrap_or(ctx.camera), &ctx.camera);
         self.prev_camera = Some(ctx.camera);
+        let terrain_m = terrain_reprojection(self.prev_terrain.or(ctx.terrain), ctx.terrain);
+        self.prev_terrain = ctx.terrain;
         self.still_frames = if dev < 2e-6 { self.still_frames + 1 } else { 0 };
         let cap = if self.still_frames > 2 {
             (HISTORY_MOVING + self.still_frames as f32).min(HISTORY_STILL)
@@ -645,6 +652,7 @@ impl Post {
         self.uniforms = PostFrame {
             reproject: m,
             reproject_ship: ship_m,
+            reproject_terrain: terrain_m,
             sizes: [t.out.0, t.out.1, trace.0, trace.1],
             grid: [t.grid.nx, t.grid.ny, t.grid.width, t.grid.height],
             grid2: [t.grid.step, self.count, 0, 0],
@@ -875,4 +883,62 @@ fn halton(mut i: u32, base: u32) -> f32 {
         i /= base;
     }
     r
+}
+
+/// TAA's reprojection of terrain pixels (`reproject_terrain` in
+/// `post_common.wgsl`): a point at distance D along the current direction n
+/// (view axes) is fixed to the rotating planet, so it was seen along
+/// n' ∝ M n + t / D, with M the previous view axes against the current ones
+/// through the body frame, and t the eye's move in the previous view axes.
+/// `prev` and `cur` are (body axes in view components, eye body-fixed km).
+fn terrain_reprojection(
+    prev: Option<([kerr::vec3::V3; 3], kerr::vec3::V3)>,
+    cur: Option<([kerr::vec3::V3; 3], kerr::vec3::V3)>,
+) -> [[f32; 4]; 4] {
+    let mut m = [[0.0f32; 4]; 4];
+    let (Some((bp, ep)), Some((bc, ec))) = (prev, cur) else {
+        for (a, row) in m.iter_mut().take(3).enumerate() {
+            row[a] = 1.0;
+        }
+        return m;
+    };
+    let moved = kerr::vec3::sub(ec, ep);
+    for (a, row) in m.iter_mut().take(3).enumerate() {
+        for (b, v) in row.iter_mut().take(3).enumerate() {
+            *v = (0..3).map(|k| bp[k][a] * bc[k][b]).sum::<f64>() as f32;
+        }
+        row[3] = (0..3).map(|k| bp[k][a] * moved[k]).sum::<f64>() as f32;
+    }
+    m
+}
+
+#[cfg(test)]
+mod terrain_tests {
+    use super::*;
+    use kerr::vec3::{self, V3};
+
+    /// A fixed ground point seen from two eye positions and orientations:
+    /// the reprojection takes its current direction to its previous one.
+    #[test]
+    fn terrain_reprojection_follows_a_fixed_point() {
+        // Body axes in view components: a rotation, then a slightly turned one.
+        let axes = |a: f64| -> [V3; 3] {
+            let (s, c) = a.sin_cos();
+            [[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]]
+        };
+        let (bp, bc) = (axes(0.3), axes(0.31));
+        let (ep, ec) = ([6400.0, 1.0, 2.0], [6400.0, 1.002, 2.001]);
+        let point: V3 = [6399.99, 1.05, 2.0];
+        let m = terrain_reprojection(Some((bp, ep)), Some((bc, ec)));
+        // View-frame direction of a body-fixed offset: components along the
+        // view axes are dot products with the body axes' view components.
+        let view = |b: &[V3; 3], d: V3| -> V3 { std::array::from_fn(|c| (0..3).map(|k| b[k][c] * d[k]).sum()) };
+        let now = view(&bc, vec3::sub(point, ec));
+        let then = view(&bp, vec3::sub(point, ep));
+        let d = vec3::norm(now);
+        let n = vec3::normalize(now);
+        let np: V3 = std::array::from_fn(|a| (0..3).map(|b| m[a][b] as f64 * n[b]).sum::<f64>() + m[a][3] as f64 / d);
+        let err = vec3::norm(vec3::sub(vec3::normalize(np), vec3::normalize(then)));
+        assert!(err < 1e-5, "{err}");
+    }
 }

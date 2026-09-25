@@ -99,6 +99,8 @@ fn cs_taa(@builtin(global_invocation_id) gid: vec3<u32>) {
     var m1 = vec3<f32>(0.0);
     var m2 = vec3<f32>(0.0);
     var ship_w = 0.0;
+    var terrain_w = 0.0;
+    var depth = 3.0e38;
     for (var dy = -1; dy <= 1; dy++) {
         for (var dx = -1; dx <= 1; dx++) {
             let i = clamp(i0 + vec2<i32>(dx, dy), vec2<i32>(0), rs - 1);
@@ -108,10 +110,17 @@ fn cs_taa(@builtin(global_invocation_id) gid: vec3<u32>) {
             let w = exp(-2.29 * dot(d, d));
             let t = traced(i);
             let y = compress(t.rgb, e);
-            // Alpha −1 − T marks the ship and its plumes (see `trace.wgsl`).
+            // Alpha −1 − T marks the ship and its plumes, 2 + distance
+            // terrain (see `trace.wgsl`).
             let on_ship = t.a < -0.5;
-            sum += vec4<f32>(y, select(t.a, -1.0 - t.a, on_ship)) * w;
+            let on_terrain = t.a > 1.5;
+            sum += vec4<f32>(y, select(select(t.a, -1.0 - t.a, on_ship), 0.0, on_terrain)) * w;
             ship_w += select(0.0, w, on_ship);
+            terrain_w += select(0.0, w, on_terrain);
+            if (on_terrain) {
+                // The nearest surface around, so edges follow the foreground.
+                depth = min(depth, t.a - 2.0);
+            }
             wsum += w;
             m1 += y;
             m2 += y * y;
@@ -130,6 +139,10 @@ fn cs_taa(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (ship_w > 0.5 * wsum) {
         let ms = pf.reproject_ship;
         np = vec3<f32>(dot(ms[0].xyz, n), dot(ms[1].xyz, n), dot(ms[2].xyz, n));
+    } else if (terrain_w > 0.5 * wsum) {
+        let mt = pf.reproject_terrain;
+        let inv_d = 1.0 / max(depth, 1e-6);
+        np = vec3<f32>(dot(mt[0].xyz, n) + mt[0].w * inv_d, dot(mt[1].xyz, n) + mt[1].w * inv_d, dot(mt[2].xyz, n) + mt[2].w * inv_d);
     } else {
         let h = vec4<f32>(-1.0, n);
         let hp = vec4<f32>(dot(pf.reproject[0], h), dot(pf.reproject[1], h), dot(pf.reproject[2], h), dot(pf.reproject[3], h));

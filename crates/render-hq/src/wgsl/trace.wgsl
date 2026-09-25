@@ -50,13 +50,13 @@ fn cs_trace(
     let ndc = vec2<f32>(px.x / f32(hq.size.x) * 2.0 - 1.0, 1.0 - px.y / f32(hq.size.y) * 2.0);
     let n = ndc_to_dir(ndc);
 
-    var near = NearResult(medium_clear(), !inside);
+    var near = NearResult(medium_clear(), !inside, -1.0);
     var on_ship = false;
     if (inside) {
         let ship = ship_trace(n);
         on_ship = ship.hit || ship.plume_t < 0.97;
         if (ship.hit) {
-            near = NearResult(Medium(ship.L, spec(0.0)), true);
+            near = NearResult(Medium(ship.L, spec(0.0)), true, -1.0);
         } else {
             near = near_field(n, frame.cam.z);
         }
@@ -82,10 +82,14 @@ fn cs_trace(
     let total = spec_fma(near.m.T, far_l, near.m.L);
     var rgb = spec_to_rgb(total);
     // Alpha is the near field's transmittance T; for the ship and its
-    // plumes, which move with the camera, it is −1 − T so the temporal pass
-    // can tell.
+    // plumes, which move with the camera, it is −1 − T, and for terrain
+    // tiles (opaque, T = 0) 2 + their distance in km, so the temporal pass
+    // can reproject each by its own motion.
     let transmit = spec_mean(near.m.T);
     var alpha = select(transmit, -1.0 - transmit, on_ship);
+    if (!on_ship && near.depth >= 0.0) {
+        alpha = 2.0 + near.depth;
+    }
     // One non-finite pixel would spread over the whole frame through the
     // temporal accumulation and the FFT: show it as magenta instead
     // (KERR_DEBUG_NAN) or black.

@@ -156,6 +156,7 @@ fn planet_trace(sys: StarSystem, p: Planet, d: vec3<f32>, sigma_max: f32, fp: f3
     var out: Hit;
     out.opaque = false;
     out.sigma = sigma_max;
+    out.depth = -1.0;
 
     let surf = planet_surface_hit(p, o, dir, u_max, fp, scale);
     let u_end = select(u_max, surf.u, surf.hit);
@@ -170,6 +171,9 @@ fn planet_trace(sys: StarSystem, p: Planet, d: vec3<f32>, sigma_max: f32, fp: f3
         back = Medium(surf_l, spec(0.0));
         out.opaque = true;
         out.sigma = surf.u / scale;
+        if (terrain_on(p)) {
+            out.depth = out.sigma;
+        }
     }
     var m = medium_over(atmo, back);
     let ring = planet_rings(p, o, dir, u_end, sun, scale);
@@ -194,6 +198,7 @@ struct Hit {
     m: Medium,
     opaque: bool,
     sigma: f32,  // rest-frame distance where the ray stopped
+    depth: f32,  // distance to a terrain-tile hit (km), −1 otherwise (for TAA)
 }
 
 const MAX_PLANETS_PER_SYSTEM: u32 = 8u;
@@ -231,6 +236,7 @@ fn system_trace(sys: StarSystem, d: vec3<f32>, fp: f32) -> Hit {
     out.m = medium_clear();
     out.opaque = false;
     out.sigma = 3.0e38;
+    out.depth = -1.0;
 
     // The star occludes what lies behind it.
     var sigma_star = 3.0e38;
@@ -284,6 +290,7 @@ fn system_trace(sys: StarSystem, d: vec3<f32>, fp: f32) -> Hit {
         if (h.opaque) {
             out.opaque = true;
             out.sigma = h.sigma;
+            out.depth = h.depth;
             return out;
         }
     }
@@ -300,12 +307,13 @@ fn system_trace(sys: StarSystem, d: vec3<f32>, fp: f32) -> Hit {
 struct NearResult {
     m: Medium,
     opaque: bool,
+    depth: f32,  // distance to a terrain-tile hit (km), −1 otherwise
 }
 
 // All nearby systems along ship-frame direction n, in the observer's frame.
 // `fp` is the pixel's angular footprint (rad).
 fn near_field(n: vec3<f32>, fp: f32) -> NearResult {
-    var out = NearResult(medium_clear(), false);
+    var out = NearResult(medium_clear(), false, -1.0);
     for (var i = 0u; i < hq.near.x; i++) {
         let sys = systems[i];
         let r = rest_ray(n, sys);
@@ -316,6 +324,7 @@ fn near_field(n: vec3<f32>, fp: f32) -> NearResult {
         out.m = medium_over(out.m, seen);
         if (h.opaque) {
             out.opaque = true;
+            out.depth = h.depth;
             break;
         }
     }

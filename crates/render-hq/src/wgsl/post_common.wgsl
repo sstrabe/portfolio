@@ -20,6 +20,11 @@ struct PostFrame {
     // camera, not the sky: rows are the previous camera axes in the current
     // ones, so n' = (m₀·n, m₁·n, m₂·n). Row 3 is unused.
     reproject_ship: array<vec4<f32>, 4>,
+    // Terrain pixels (alpha ≥ 2: distance D = alpha − 2 km) are fixed to
+    // the rotating planet: n' ∝ M n + t / D with M (rows 0–2, xyz) the
+    // previous camera axes against the current ones in the planet's body
+    // frame and t (column w) the eye's move, in previous camera axes (km).
+    reproject_terrain: array<vec4<f32>, 4>,
     sizes: vec4<u32>,     // output width, height; trace width, height
     grid: vec4<u32>,      // FFT nx, ny; grid image width, height
     grid2: vec4<u32>,     // output px per grid px, frame count, unused, unused

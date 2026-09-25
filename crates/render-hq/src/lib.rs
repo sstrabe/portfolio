@@ -63,6 +63,9 @@ pub struct FrameContext<'a> {
     /// The camera's pose in the ship frame: position (m) and axes
     /// (forward, left, up).
     pub camera: crate::ship::camera::Pose,
+    /// The planet with terrain tiles, if any: its body axes in the view
+    /// axes and the eye's body-fixed position (km), for TAA.
+    pub terrain: Option<([kerr::vec3::V3; 3], kerr::vec3::V3)>,
 }
 
 #[cfg(test)]

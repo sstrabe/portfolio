@@ -434,6 +434,18 @@ impl NearField {
         }
     }
 
+    /// The planet whose terrain tiles are in the trace: its body axes in
+    /// the view axes and the pilot's body-fixed position (km).
+    pub fn terrain_pose(&self) -> Option<([V3; 3], V3)> {
+        let key = self.maps.baked?;
+        self.terrain.tile_gen.accel.as_ref().filter(|a| a.instances > 0)?;
+        let p = self.selection.planets.iter().find(|p| {
+            let sys = &self.selection.systems[p.system].system;
+            (sys.star, sys.generation, p.index) == key
+        })?;
+        Some((p.body_axes, p.pilot_body_km()))
+    }
+
     pub fn layout(&self) -> &wgpu::BindGroupLayout {
         &self.layout
     }

@@ -484,6 +484,7 @@ impl Gpu {
             wall_time,
             view,
             camera: self.ship.camera.pose(),
+            terrain: self.near.terrain_pose(),
         };
         self.atmo.update(&ctx);
         self.nebula.update(&ctx);
