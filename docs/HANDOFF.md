@@ -178,8 +178,16 @@ march). The post chain is ~2 ms.
    acceleration are `SPIN_ACCEL`/`TURN_RATE` in `input.rs`, engine and RCS
    strength `ENGINE`/`RCS`).
 2. **"You can't see what you are":** done (the ship and `V`).
-3. **Land colours** on ocean worlds lean pinkish-tan; vegetation cover could
-   be greener. Tuning in `planet.wgsl` (`material_ocean_world`).
+3. **Land colours** on ocean worlds: tuned (2026-09-25). Vegetation now
+   follows the aridity index (rain over potential evaporation), Earth-like
+   soils (`refl_soil`) replaced the Mars-style ferric ones, and dry grass
+   reads olive-brown. From orbit the land is khaki, olive and green, but
+   hazy: the showcase world's air is 1.44× Earth's with 1.5× the aerosols,
+   and the veil over the disc looks stronger than Earth's from space. Worth
+   checking the atmosphere's path radiance against Earth (with the grey
+   ground-level sky, item 8). The climate statistics come from
+   `cargo test -p desktop --release -- --ignored --nocapture climate` (needs
+   a GPU): drylands 48 % of land (Earth 41 %), humid 38 %, cold 14 %.
 4. **Terrain** is the datum sphere with normals from the height field, so
    mountains don't break the limb's silhouette and don't shadow each other
    near the terminator. The design (`docs/planets.md` §5) plans sphere
@@ -205,6 +213,25 @@ march). The post chain is ~2 ms.
    right above the ground will need a planet-relative physics state.
 10. **Atmospheres** use the renderer's 16 visible bins, not the design's
    200–1600 nm range, so a strongly blueshifted flyby loses the UV look.
+11. **To do (owner, 2026-09-25): "make the camera base rotations off of the
+   orientation of the rocket, not the global axes."** Note: the chase
+   camera's orbit (`ChaseCamera` in `render-hq/src/ship/camera.rs`, right
+   drag) is already in the ship frame (yaw about the ship's up axis, pitch
+   from its horizontal plane, and the pilot tetrad turns with the ship);
+   the map view (`desktop/src/map.rs`) orbits the system's fixed axes.
+   Confirm with the owner which view feels wrong (the map, or orbiting
+   about the rocket's long axis / its current up) before changing it.
+12. **Bug (owner, 2026-09-25): the ship still flickers.** From the owner's
+   capture (orbiting the chase camera around the ship near a planet, ~20
+   fps): while the camera orbits, the ship's silhouette turns blocky and
+   jagged, with dark fringes by the foil and nozzles. Cause: TAA moves ship
+   pixels by the camera's rotation alone (`reproject_ship`), but orbiting
+   the chase camera also translates it around the ship, so the history is
+   misplaced by about the orbit angle and rejected. Fix: a per-pixel depth
+   from the trace and full rigid reprojection in the ship frame (previous
+   camera pose, position and axes). This is the same depth-aware TAA that
+   terrain phase 3 needs. Separately, the sun's starburst switches on and
+   off as the hull's edge crosses its disc (expected, but abrupt).
 
 ---
 
@@ -226,7 +253,7 @@ yards", and a detailed design followed (`docs/planets.md`). Status:
 | Stellar-mass hole lensing | done |
 | KSP-style controls, HUD with navball, map view (`render-hq/src/overlay.rs` draws both) | done |
 | Targets: planets or Sgr A* (`world::Target`); orbit autopilot to either (hole: 50 M, static-observer frame) | done |
-| **High-fidelity terrain** (plan: walkable cm-level ground, Earth-like worlds with continents and biomes, first showcase a sunny Hawaii-like beach; RT cores first, raster fallback) | Phase 0 done: one planet frame for physics and rendering (`kerr::frame`, `Local::planet_relative`/`planet_point`; landed and drawn altitude agree to 1 cm), the GPU terrain probe (`render_hq::terrain::probe`), ground starts. Phase 0b done: hardware ray queries (RT cores) when the adapter has them (`KERR_RT=0` for software); the ship is a BLAS in a TLAS (`ship_rq.wgsl`), pixel-identical to the software BVH (`ship_bvh.wgsl`). Phase 1 in progress: the cube-sphere mapping (`terrain/cube.rs`, `cube.wgsl`) and hotspot island chains (`tn_hotspots` in `terrain.wgsl`, analytic so they're sharp at any scale) are done, with `--start ground:island:0:HOUR` finding the tallest young tropical island's shore. Baked climate maps are in (`terrain/maps.rs`, `climate.wgsl`, `maps.wgsl`): a 6 × 514² cube map of temperature, rainfall (latitude cells, prevailing winds walked 3000 km upwind with orographic rain, rain shadows and maritime coasts) and vegetation, baked when the pilot comes within 50 radii of a solid world with air; ocean-world materials take vegetation and dryness from it. Next: tune the vegetation palette and continental rain (interiors still read tan from orbit), then phase 2 (tile pyramid + precision anchor). Global erosion and rivers moved to phase 5 (multi-scale, on the tile pyramid). The plan is in the session's plan file; phases: 1 maps, 2 tile pyramid + precision anchor, 3 RT terrain, 4 shadows/sky/reflections, 4b raster fallback, 5 erosion + cm materials, 6 coastal water, 7 vegetation, 8 walking, 9 polish. |
+| **High-fidelity terrain** (plan: walkable cm-level ground, Earth-like worlds with continents and biomes, first showcase a sunny Hawaii-like beach; RT cores first, raster fallback) | Phase 0 done: one planet frame for physics and rendering (`kerr::frame`, `Local::planet_relative`/`planet_point`; landed and drawn altitude agree to 1 cm), the GPU terrain probe (`render_hq::terrain::probe`), ground starts. Phase 0b done: hardware ray queries (RT cores) when the adapter has them (`KERR_RT=0` for software); the ship is a BLAS in a TLAS (`ship_rq.wgsl`), pixel-identical to the software BVH (`ship_bvh.wgsl`). Phase 1 in progress: the cube-sphere mapping (`terrain/cube.rs`, `cube.wgsl`) and hotspot island chains (`tn_hotspots` in `terrain.wgsl`, analytic so they're sharp at any scale) are done, with `--start ground:island:0:HOUR` finding the tallest young tropical island's shore. Baked climate maps are in (`terrain/maps.rs`, `climate.wgsl`, `maps.wgsl`): a 6 × 514² cube map of temperature, rainfall (latitude cells, prevailing winds walked 3000 km upwind with orographic rain, rain shadows and maritime coasts) and vegetation, baked when the pilot comes within 50 radii of a solid world with air; ocean-world materials take vegetation and dryness from it. Palette and rain tuned (aridity index, `SurfaceMaps::read_climate` readback, by-hand statistics test `ocean_world_climate`). Next: the ship-flicker fix (depth-aware TAA, item 12 in §5; it's the first piece of phase 3's reprojection), then phase 2 (tile pyramid + precision anchor). Global erosion and rivers moved to phase 5 (multi-scale, on the tile pyramid). The plan is in the session's plan file; phases: 1 maps, 2 tile pyramid + precision anchor, 3 RT terrain, 4 shadows/sky/reflections, 4b raster fallback, 5 erosion + cm materials, 6 coastal water, 7 vegetation, 8 walking, 9 polish. |
 | RCS: 32 nozzles in the mesh, firing from the commanded angular acceleration and translation (`Ship::set_rcs`), plumes traced in `ship.wgsl`; SAS buttons by the navball | done |
 | RT-core terrain and ship, surface maps, 200–1600 nm atmosphere tables, presets (Mars, Venus, Titan, Jupiter, Neptune) | not started |
 

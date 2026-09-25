@@ -4,9 +4,11 @@
 //! winds and rain shadows, and vegetation. One planet at a time has them
 //! (the nearest solid world with air); the near field binds them.
 
+use super::cube;
 use crate::shaders;
 use bytemuck::{Pod, Zeroable};
 use kerr::planets::Planet;
+use kerr::vec3::V3;
 use wgpu::util::DeviceExt;
 
 /// Interior texels per face edge of the climate map (~22 km on an Earth);
@@ -50,7 +52,9 @@ impl SurfaceMaps {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let climate_view = climate.create_view(&wgpu::TextureViewDescriptor {
@@ -151,5 +155,89 @@ impl SurfaceMaps {
         }
         queue.submit([enc.finish()]);
         self.baked = Some(key);
+    }
+
+    /// The baked climate, read back to the CPU (blocking: for tools such as
+    /// the site finder, and tests).
+    pub fn read_climate(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> ClimateMap {
+        let size = CLIMATE_N + 2;
+        let row = (size * 8).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("climate readback"),
+            size: (row * size * 6) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("climate readback") });
+        enc.copy_texture_to_buffer(
+            self.climate.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(size) },
+            },
+            wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 6 },
+        );
+        queue.submit([enc.finish()]);
+        let slice = readback.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let mut texels = Vec::with_capacity((size * size * 6) as usize);
+        if let Ok(data) = slice.get_mapped_range() {
+            let halves: &[u16] = bytemuck::cast_slice(&data);
+            for layer in 0..size * 6 {
+                let start = (layer * row / 2) as usize;
+                for x in 0..size as usize {
+                    let t = &halves[start + 4 * x..start + 4 * x + 4];
+                    texels.push(std::array::from_fn(|c| f16_to_f32(t[c])));
+                }
+            }
+        }
+        ClimateMap { n: CLIMATE_N as usize, texels }
+    }
+}
+
+/// The climate cube map on the CPU (see [`SurfaceMaps::read_climate`]).
+pub struct ClimateMap {
+    n: usize,
+    texels: Vec<[f32; 4]>,
+}
+
+impl ClimateMap {
+    /// (temperature K, precipitation mm/yr, vegetation 0–1, dryness 0–1)
+    /// at body-fixed direction `q`: the nearest texel.
+    pub fn at(&self, q: V3) -> [f32; 4] {
+        let (face, u, v) = cube::face_uv(q);
+        let size = self.n + 2;
+        let texel = |c: f64| (((c * 0.5 + 0.5) * self.n as f64) as usize + 1).min(self.n);
+        self.texels.get((face * size + texel(v)) * size + texel(u)).copied().unwrap_or([0.0; 4])
+    }
+}
+
+/// IEEE half to single precision.
+fn f16_to_f32(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exp = ((h >> 10) & 0x1f) as i32;
+    let man = (h & 0x3ff) as f32;
+    sign * match exp {
+        0 => man * 2f32.powi(-24),
+        31 => f32::INFINITY,
+        _ => (1.0 + man / 1024.0) * 2f32.powi(exp - 15),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn halves_decode() {
+        assert_eq!(f16_to_f32(0x3c00), 1.0);
+        assert_eq!(f16_to_f32(0xc000), -2.0);
+        assert_eq!(f16_to_f32(0x7bff), 65504.0);
+        assert_eq!(f16_to_f32(0x0001), 2f32.powi(-24));
+        // 288.0 (a temperature) and 1500.0 (rain).
+        assert_eq!(f16_to_f32(0x5c80), 288.0);
+        assert_eq!(f16_to_f32(0x65dc), 1500.0);
     }
 }

@@ -13,9 +13,10 @@
 //   walks 3000 km upwind: the sea refills the air, land slowly dries it,
 //   rising ground rains it out (windward coasts are wet), and air that
 //   has crossed mountains is dry (rain shadows: the sunny lee coasts).
-// * Vegetation from temperature and rain: none on ice and in deserts,
-//   sparse in tundra and dry grassland, dense in forests; `dryness` tints
-//   it from green to straw (savanna, steppe).
+// * Vegetation from warmth and the aridity index (rain over potential
+//   evaporation): none on ice and in deserts, sparse in tundra and dry
+//   grassland, dense in forests; `dryness` tints it from green to straw
+//   (savanna, steppe) and the soil from dark loam to pale sand.
 // ---------------------------------------------------------------------------
 
 struct ClimateParams {
@@ -65,8 +66,13 @@ fn cs_climate(@builtin(global_invocation_id) gid: vec3<u32>) {
     let from_east = alat < 30.0 || alat > 60.0;
     let upwind = select(-east, east, from_east);
     let step_km = 150.0;
-    var moisture = 1.0;
-    var last_h = 0.0;
+    // Air that has come 3000 km over land is continental and fairly dry;
+    // the sea refills it.
+    var moisture = 0.7;
+    // The height the air has already been lifted to and rained out at: only
+    // ground above it wrings out more (hills behind a range don't). It
+    // relaxes as the land's evaporation humidifies the air again.
+    var ceiling = 0.0;
     // Steps since the air left the sea: onshore maritime air rains on the
     // coast it reaches (the trade-wind coasts are wet).
     var inland = 20.0;
@@ -75,33 +81,37 @@ fn cs_climate(@builtin(global_invocation_id) gid: vec3<u32>) {
         let hk = climate_height(tp, p, step_km);
         if (hk < 0.0 && tp.liquid == FILL_WATER) {
             moisture = min(1.0, moisture + 0.35);
-            last_h = 0.0;
+            ceiling = 0.0;
             inland = 0.0;
         } else {
             inland += 1.0;
-            let lift = max(hk - last_h, 0.0);
-            let wet = moisture * min(1.0, lift / 1.2) * 0.6;
+            let lift = max(hk - ceiling, 0.0);
+            let wet = moisture * min(1.0, lift / 1.5) * 0.7;
             // Land dries the air slowly (plants give back much of the rain).
-            moisture = (moisture - wet) * 0.985;
-            last_h = max(hk, 0.0);
+            moisture = (moisture - wet) * 0.99;
+            ceiling = max(0.9 * ceiling, max(hk, 0.0));
         }
     }
     // Rising ground here rains out what the air carries (windward slopes).
-    let lift_here = max(max(h, 0.0) - last_h, 0.0);
+    let lift_here = max(max(h, 0.0) - ceiling, 0.0);
     let orographic = min(lift_here / 0.8, 1.5);
     let ocean = h < 0.0 && tp.liquid == FILL_WATER;
     let maritime = 800.0 * moisture * exp(-inland / 2.5) * smoothstep(70.0, 40.0, alat);
     var rain = select(p_lat * moisture * (1.0 + 2.5 * orographic) + maritime, p_lat + 800.0 * smoothstep(70.0, 40.0, alat), ocean);
     rain = max(rain, 30.0);
 
-    // Vegetation (Whittaker, simplified): cold or dry limits it.
+    // Vegetation by the aridity index, rain over potential evaporation
+    // (UNEP: arid below 0.2, humid above 0.65), and warmth. Evaporation
+    // rises with temperature (~Thornthwaite): the same rain that keeps a
+    // temperate forest green leaves a tropical savanna dry.
     let t_c = t_air - 273.15;
     let warmth = smoothstep(-8.0, 6.0, t_c);
-    let water = smoothstep(100.0, 700.0, rain);
+    let pet = clamp(250.0 + 40.0 * t_c, 100.0, 1800.0);
+    let aridity = rain / pet;
     // Over the sea these are what a shore at sea level would have, so
     // coasts don't blend towards bare ground.
-    let veg = warmth * water;
-    // Dryness: straw-coloured grass where rain is scarce or seasonal.
-    let dryness = 1.0 - smoothstep(500.0, 1600.0, rain);
+    let veg = warmth * smoothstep(0.05, 0.55, aridity);
+    // Dryness: straw-coloured grass and pale sandy soil where semi-arid.
+    let dryness = 1.0 - smoothstep(0.3, 0.9, aridity);
     textureStore(climate_out, vec2<i32>(gid.xy), i32(face), vec4<f32>(t_air, rain, veg, dryness));
 }

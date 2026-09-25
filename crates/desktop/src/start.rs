@@ -652,4 +652,68 @@ mod tests {
         let refl = vec3::axpy(look, -2.0 * vec3::dot(look, n), n);
         assert!(vec3::dot(refl, to_star) > 0.9999, "{refl:?}");
     }
+
+    /// How the ocean world's land divides among climates, by the aridity
+    /// index `climate.wgsl` uses, against Earth's (UNEP: drylands are ~41 %
+    /// of the land, 7 % hyper-arid, 11 % arid, 15 % semi-arid, 9 % dry
+    /// sub-humid). Needs a GPU, so it's run by hand:
+    /// `cargo test -p desktop --release -- --ignored --nocapture climate`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn ocean_world_climate() {
+        let world = crate::world(384);
+        let (n, cap) = (world.cluster.len() as u32, world.cluster.history.capacity() as u32);
+        let gpu = pollster::block_on(Gpu::new(crate::instance(), None, (64, 64), n, cap)).unwrap();
+        let (sys, i) = find_planet(&world, KindFilter::Kind(PlanetKind::Ocean)).unwrap();
+        let planet = &sys.planets[i];
+        let mut maps = terrain::maps::SurfaceMaps::new(&gpu.device);
+        maps.bake(&gpu.device, &gpu.queue, (0, 0, i), planet);
+        let climate = maps.read_climate(&gpu.device, &gpu.queue);
+        let dirs = cap_points([0.0, 0.0, 1.0], std::f64::consts::PI, 200_000);
+        let samples = Probe::new(&gpu.device).sample(&gpu.device, &gpu.queue, planet, &dirs, 20.0);
+
+        // Classes: cold (below −8 °C), hyper-arid, arid, semi-arid, dry
+        // sub-humid, humid; and per latitude band the mean rain and cover.
+        let names = ["cold", "hyper-arid", "arid", "semi-arid", "dry sub-humid", "humid"];
+        let mut classes = [0usize; 6];
+        let mut bands = [[0.0f64; 3]; 4];
+        let mut land = 0;
+        for (q, s) in dirs.iter().zip(&samples) {
+            if s.surface_km <= 0.0 {
+                continue;
+            }
+            land += 1;
+            let [t, rain, veg, _] = climate.at(*q);
+            let t_c = t - 273.15;
+            // Potential evaporation as `climate.wgsl` has it.
+            let aridity = rain / (250.0 + 40.0 * t_c).clamp(100.0, 1800.0);
+            let class = match aridity {
+                _ if t_c < -8.0 => 0,
+                a if a < 0.05 => 1,
+                a if a < 0.2 => 2,
+                a if a < 0.5 => 3,
+                a if a < 0.65 => 4,
+                _ => 5,
+            };
+            classes[class] += 1;
+            let lat = q[2].abs().asin().to_degrees();
+            let band = &mut bands[[15.0, 35.0, 60.0, 90.0].iter().position(|&b| lat < b).unwrap_or(3)];
+            *band = [band[0] + 1.0, band[1] + rain as f64, band[2] + veg as f64];
+        }
+        println!("{} land of {} samples ({:.0} %)", land, dirs.len(), 100.0 * land as f64 / dirs.len() as f64);
+        for (name, c) in names.iter().zip(classes) {
+            println!("{name:>14}: {:5.1} %", 100.0 * c as f64 / land as f64);
+        }
+        for (b, name) in bands.iter().zip(["0–15°", "15–35°", "35–60°", "60–90°"]) {
+            println!(
+                "{name:>7}: land {:5.1} %, rain {:5.0} mm/yr, cover {:.2}",
+                100.0 * b[0] / land as f64,
+                b[1] / b[0],
+                b[2] / b[0]
+            );
+        }
+        let dry = classes[1..5].iter().sum::<usize>() as f64 / land as f64;
+        assert!((0.2..0.6).contains(&dry), "drylands {:.0} % of the land", 100.0 * dry);
+        assert!(classes[5] as f64 / land as f64 > 0.25, "too little humid land");
+    }
 }

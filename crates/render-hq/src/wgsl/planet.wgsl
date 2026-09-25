@@ -123,9 +123,19 @@ fn refl_ferric(strength: f32) -> Spectrum {
 fn refl_vegetation(dryness: f32) -> Spectrum {
     let green = spec_axpy(spec_bump(550.0, 28.0), 0.06, spec(0.035));
     let leaf = spec_axpy(spec_ramp(690.0, 740.0), 0.4, green);
-    // Dry grass and savanna: yellower, weaker chlorophyll bands.
-    let dry = spec_axpy(spec_ramp(480.0, 650.0), 0.18, spec(0.08));
-    return spec_mix(leaf, dry, dryness);
+    // Dry grass: yellower, weaker chlorophyll bands. Seen from above,
+    // savanna and steppe are olive-brown (scattered trees and shrubs, and
+    // their shadows), so some leaf stays in the mix.
+    let dry = spec_axpy(spec_ramp(480.0, 650.0), 0.13, spec(0.06));
+    return spec_mix(leaf, dry, 0.8 * dryness);
+}
+
+// Soils of a living world: pale yellow quartz sand where arid (iron-oxide
+// coatings take the blue), dark brown loam where wet (organic matter).
+fn refl_soil(dryness: f32) -> Spectrum {
+    let sand = spec_axpy(spec_ramp(420.0, 600.0), 0.24, spec(0.17));
+    let loam = spec_axpy(spec_ramp(450.0, 700.0), 0.1, spec(0.06));
+    return spec_mix(loam, sand, dryness);
 }
 
 fn refl_snow() -> Spectrum {
@@ -261,16 +271,19 @@ fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, b
     }
     let moist = m.z;
     let rock = spec_mix(refl_granite(), refl_basalt(), m.w);
-    // Vegetation where it is warm and wet; bare rock high in the ranges;
-    // desert where dry; snow where cold.
-    var veg_w = smoothstep(0.1, 0.4, moist) * smoothstep(266.0, 280.0, temp) * (1.0 - smoothstep(0.6, 0.95, m.y));
+    // Vegetation where it is warm and wet; desert where dry; snow where
+    // cold. Mountains are green below the treeline (the temperature sees to
+    // that): only the cores of the highest ranges are bare, and rock shows
+    // through the thin soils of dry ranges.
+    let bare = smoothstep(0.75, 1.0, m.y);
+    var veg_w = smoothstep(0.1, 0.4, moist) * smoothstep(266.0, 280.0, temp) * (1.0 - bare);
     var dryness = 1.0 - smoothstep(0.3, 0.7, moist);
     if (baked) {
-        // Vegetation from the climate: none on the highest, rockiest ranges.
-        veg_w = climate.z * smoothstep(262.0, 272.0, temp) * (1.0 - smoothstep(0.6, 0.95, m.y));
+        // Vegetation from the climate.
+        veg_w = climate.z * smoothstep(262.0, 272.0, temp) * (1.0 - bare);
         dryness = climate.w;
     }
-    var a = spec_mix(refl_ferric(0.3), rock, smoothstep(0.3, 0.7, m.y));
+    var a = spec_mix(refl_soil(dryness), rock, max(bare, smoothstep(0.4, 0.9, m.y) * dryness));
     a = spec_mix(a, refl_vegetation(dryness), veg_w);
     let snow = smoothstep(271.0, 262.0, temp + 3.0 * (moist - 0.5));
     mat.albedo = spec_mix(a, refl_snow(), snow);
