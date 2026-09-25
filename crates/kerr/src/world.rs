@@ -184,6 +184,9 @@ pub enum PilotStatus {
     },
     /// Flying to a planet and into a circular orbit around it.
     Orbit(PlanetRef),
+    /// Flying into a circular orbit around the hole
+    /// ([`HOLE_PARKING_RADIUS`]).
+    HoleOrbit,
     /// Resting on a planet's surface, turning with it; `offset` is the
     /// position relative to the centre in the planet's rotating frame.
     Landed {
@@ -204,7 +207,7 @@ pub enum WorldEvent {
     },
     /// Flew into a star and was put back outside it.
     StarContact,
-    OrbitReached(PlanetRef),
+    OrbitReached(Target),
     AutopilotOff,
     /// The throttle was reset for a new gravity well.
     Throttle(f64),
@@ -268,6 +271,13 @@ pub struct Telemetry {
     pub autopilot: Option<&'static str>,
 }
 
+/// What the pilot has selected: a planet, or the hole itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Target {
+    Planet(PlanetRef),
+    Hole,
+}
+
 /// The body speeds, orbits and flight markers are measured against: the
 /// one whose gravity dominates at the ship.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -293,6 +303,21 @@ pub struct Relative {
     /// Lorentz factor of that velocity, computed directly so it stays
     /// accurate at any speed (1 − v² loses everything at high γ).
     pub gamma: f64,
+}
+
+/// A body for the orbit autopilot, now.
+struct Parking {
+    /// Centre and coordinate velocity.
+    centre: V3,
+    velocity: V3,
+    /// `GM`, radius and the parking orbit's radius, units of M.
+    mu: f64,
+    radius: f64,
+    rc: f64,
+    /// Coordinate acceleration of the ship relative to the body, unpowered.
+    gravity: V3,
+    /// Schwarzschild radius for the circular speed around the hole, else 0.
+    rs: f64,
 }
 
 /// The ship relative to a planet.
@@ -335,8 +360,8 @@ pub struct World {
     local_until: f64,
     /// Fraction of [`WorldConfig::thrust`] the flight controls command.
     pub throttle: f64,
-    /// Planet for the orbit autopilot (cycled with `Tab` on the desktop).
-    pub planet_target: Option<PlanetRef>,
+    /// Target of the orbit autopilot (cycled with `Tab` on the desktop).
+    pub target: Option<Target>,
     /// Plane of the orbit the autopilot flies into (coordinate normal).
     orbit_normal: V3,
     /// Planet whose vicinity the ship is in (sets the default throttle).
@@ -363,6 +388,9 @@ const VELOCITY_GAIN: f64 = 0.5;
 const POSITION_GAIN: f64 = 0.1;
 /// `Tab` and the orbit autopilot look for planets within this range.
 const TARGET_RANGE_AU: f64 = 2000.0;
+/// Radius of the autopilot's parking orbit around the hole, units of M:
+/// the shadow spans about 12° from there, and an orbit takes 13 hours.
+pub const HOLE_PARKING_RADIUS: f64 = 50.0;
 /// Near a planet (inside this many radii) the throttle defaults to a
 /// value suited to its surface gravity.
 const WELL_RADII: (f64, f64) = (20.0, 25.0);
@@ -407,7 +435,7 @@ impl World {
             target_system: None,
             local_until: f64::NEG_INFINITY,
             throttle: 1.0,
-            planet_target: None,
+            target: None,
             orbit_normal: [0.0, 0.0, 1.0],
             well: None,
             warp_limited: false,
@@ -446,7 +474,7 @@ impl World {
         // Manual thrust takes over from the orbit autopilot, or lifts off.
         if input.thrust != [0.0; 3] {
             match self.status {
-                PilotStatus::Orbit(_) => {
+                PilotStatus::Orbit(_) | PilotStatus::HoleOrbit => {
                     self.status = PilotStatus::Free;
                     self.events.push(WorldEvent::AutopilotOff);
                 }
@@ -514,7 +542,8 @@ impl World {
         let stations = self.station_count() > 0;
         // Guidance is re-evaluated at least every CONTROL_STEP of proper
         // time so it stays stable at high time scales.
-        let guided = input.brake || matches!(self.status, PilotStatus::Autopilot(_) | PilotStatus::Orbit(_));
+        let guided =
+            input.brake || matches!(self.status, PilotStatus::Autopilot(_)) || self.autopilot_target().is_some();
         let mut left = dtau;
         while left > 0.0 {
             self.sync_local();
@@ -549,8 +578,8 @@ impl World {
                 self.touch(from, to);
                 break;
             }
-            if let PilotStatus::Orbit(p) = self.status {
-                self.check_orbit(p);
+            if let Some(target) = self.autopilot_target() {
+                self.check_orbit(target);
             }
         }
         self.cluster.advance_to(self.pilot.x[0]);
@@ -636,8 +665,8 @@ impl World {
             }
         }
 
-        if let PilotStatus::Orbit(p) = self.status {
-            match self.orbit_guidance(p, per_tau) {
+        if let Some(target) = self.autopilot_target() {
+            match self.orbit_guidance(target, per_tau) {
                 Some((a, s)) => {
                     accel = a;
                     if input.turn == [0.0; 3] {
@@ -739,7 +768,7 @@ impl World {
             PilotStatus::Free => (0, -1),
             PilotStatus::Autopilot(i) => (1, i as i32),
             PilotStatus::Docked { station, .. } => (2, station as i32),
-            PilotStatus::Orbit(_) => (3, -1),
+            PilotStatus::Orbit(_) | PilotStatus::HoleOrbit => (3, -1),
             PilotStatus::Landed { .. } => (4, -1),
         };
         let (sd, sv) = match self.status {
@@ -808,7 +837,7 @@ impl World {
         let k = self.kerr;
         let pos = self.pilot.position();
         self.local = local::select(&self.cluster, pos).map(|i| Local::new(&k, &self.cluster, i, pos));
-        let wanted = self.flight_planet().or(self.planet_target);
+        let wanted = self.flight_planet().or(self.planet_target());
         self.target_system = wanted
             .filter(|&p| self.valid(p) && !self.local.as_ref().is_some_and(|l| l.star == p.star))
             .map(|p| Local::new(&k, &self.cluster, p.star, pos));
@@ -903,16 +932,18 @@ impl World {
     /// Largest time scale (M per wall second) allowed where the ship is: an
     /// orbit at its distance from the dominant body must take at least
     /// [`WALL_SECONDS_PER_ORBIT`], so low orbits stay watchable. Real time
-    /// is always allowed. Unlimited outside star systems.
+    /// is always allowed. Outside star systems the hole is the body (which
+    /// only limits the warp well inside the cluster).
     pub fn warp_limit(&self) -> f64 {
-        let Some(l) = self.local.as_ref().filter(|_| self.cfg.local_gravity) else { return f64::INFINITY };
         let (t, pos) = (self.pilot.x[0], self.pilot.position());
-        if !l.reaches(t, pos) {
-            return f64::INFINITY;
-        }
-        let (body, d) = l.dominant(t, pos);
-        let (mu, radius) = l.mass_of(body);
-        let d = d.max(radius);
+        let (mu, d) = match self.local.as_ref().filter(|l| self.cfg.local_gravity && l.reaches(t, pos)) {
+            Some(l) => {
+                let (body, d) = l.dominant(t, pos);
+                let (mu, radius) = l.mass_of(body);
+                (mu, d.max(radius))
+            }
+            None => (self.kerr.m, self.kerr.radius(pos).max(self.kerr.r_plus())),
+        };
         let period = std::f64::consts::TAU * (d * d * d / mu).sqrt();
         (period / WALL_SECONDS_PER_ORBIT).max(1.0 / SECONDS_PER_M)
     }
@@ -931,10 +962,10 @@ impl World {
             self.warp_limited = false;
         }
         let mut ts = self.cfg.time_scale;
-        if let PilotStatus::Orbit(p) = self.status {
+        if let Some(target) = self.autopilot_target() {
             // Enough warp for the rest of the trip to take a few seconds,
             // within the cap and with a few guidance updates per frame.
-            let auto = self.autopilot_time_to_go(p) / AUTOPILOT_WALL_SECONDS;
+            let auto = self.autopilot_time_to_go(target) / AUTOPILOT_WALL_SECONDS;
             ts = ts.max(auto.min(cap).min(20.0 * CONTROL_STEP / wall_dt.max(1e-3)));
         }
         ts
@@ -948,19 +979,40 @@ impl World {
 
     /// Rough proper time the orbit autopilot still needs: a boosted
     /// brachistochrone to the parking orbit plus one orbit to settle.
-    fn autopilot_time_to_go(&self, p: PlanetRef) -> f64 {
-        let Some(l) = self.system_of(p) else { return 0.0 };
-        let (mu, _) = l.planet_mass(p.planet);
-        let rc = Self::parking_radius(l, p.planet);
-        let s = (vec3::norm(self.relative_to(l, p.planet).0) - rc).max(0.0);
+    fn autopilot_time_to_go(&self, target: Target) -> f64 {
+        let Some(b) = self.parking(target) else { return 0.0 };
+        let s = (vec3::norm(vec3::sub(self.pilot.position(), b.centre)) - b.rc).max(0.0);
         let a = BRAKE_SHARE * self.cfg.thrust * self.cfg.boost_factor;
-        2.0 * (1.0 + 0.5 * a * s).acosh() / a + std::f64::consts::TAU * (rc * rc * rc / mu).sqrt()
+        2.0 * (1.0 + 0.5 * a * s).acosh() / a + std::f64::consts::TAU * (b.rc * b.rc * b.rc / b.mu).sqrt()
+    }
+
+    /// What the orbit autopilot is flying to, while it flies.
+    fn autopilot_target(&self) -> Option<Target> {
+        match self.status {
+            PilotStatus::Orbit(p) => Some(Target::Planet(p)),
+            PilotStatus::HoleOrbit => Some(Target::Hole),
+            _ => None,
+        }
+    }
+
+    /// The targeted planet, if a planet is targeted.
+    pub fn planet_target(&self) -> Option<PlanetRef> {
+        match self.target {
+            Some(Target::Planet(p)) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn target_valid(&self, target: Target) -> bool {
+        match target {
+            Target::Planet(p) => self.valid(p),
+            Target::Hole => true,
+        }
     }
 
     fn autopilot_phase(&self) -> Option<&'static str> {
-        let PilotStatus::Orbit(p) = self.status else { return None };
-        let l = self.system_of(p)?;
-        let d = vec3::norm(self.relative_to(l, p.planet).0) / Self::parking_radius(l, p.planet);
+        let b = self.parking(self.autopilot_target()?)?;
+        let d = vec3::norm(vec3::sub(self.pilot.position(), b.centre)) / b.rc;
         Some(if d > 30.0 {
             "transfer"
         } else if d > 1.5 {
@@ -984,30 +1036,32 @@ impl World {
         Some(PlanetRef { star: sys.star, generation: bodies[sys.star].generation, planet: i })
     }
 
-    /// Target the next planet (outwards) of the targeted system, or the
-    /// nearest planet if none is targeted. Retargets a flying autopilot.
-    pub fn cycle_target(&mut self) -> Option<PlanetRef> {
-        let next = match self.planet_target.filter(|&p| self.valid(p)) {
-            Some(p) => {
+    /// Target the next planet (outwards) of the targeted system, then the
+    /// hole, then the nearest planet again (the hole if there is none
+    /// within [`TARGET_RANGE_AU`]). Retargets a flying autopilot.
+    pub fn cycle_target(&mut self) -> Option<Target> {
+        let nearest = self.nearest_planet().map_or(Target::Hole, Target::Planet);
+        let next = match self.target.filter(|&t| self.target_valid(t)) {
+            Some(Target::Planet(p)) => {
                 let body = &self.cluster.bodies[p.star];
                 let n = planets::system(self.cluster.cfg.seed, p.star, body).map_or(1, |s| s.planets.len());
-                PlanetRef { planet: (p.planet + 1) % n, ..p }
+                if p.planet + 1 < n { Target::Planet(PlanetRef { planet: p.planet + 1, ..p }) } else { Target::Hole }
             }
-            None => self.nearest_planet()?,
+            Some(Target::Hole) | None => nearest,
         };
         self.set_target(next).then_some(next)
     }
 
-    /// Target planet `p` (picked on the map, say), if its star still
-    /// exists. Retargets a flying autopilot.
-    pub fn set_target(&mut self, p: PlanetRef) -> bool {
-        if !self.valid(p) {
+    /// Target a planet (picked on the map, say) if its star still exists,
+    /// or the hole. Retargets a flying autopilot.
+    pub fn set_target(&mut self, target: Target) -> bool {
+        if !self.target_valid(target) {
             return false;
         }
-        self.planet_target = Some(p);
+        self.target = Some(target);
         self.local_until = f64::NEG_INFINITY;
-        if matches!(self.status, PilotStatus::Orbit(_)) {
-            self.engage(p);
+        if self.autopilot_target().is_some() {
+            self.engage(target);
         }
         true
     }
@@ -1060,36 +1114,47 @@ impl World {
         }
     }
 
-    /// Engage the orbit autopilot on the target (or the nearest planet),
-    /// or disengage it. Returns the planet when engaged.
-    pub fn toggle_orbit_autopilot(&mut self) -> Option<PlanetRef> {
-        if matches!(self.status, PilotStatus::Orbit(_)) {
+    /// Engage the orbit autopilot on the target (else the nearest planet,
+    /// else the hole), or disengage it. Returns the target when engaged.
+    pub fn toggle_orbit_autopilot(&mut self) -> Option<Target> {
+        if self.autopilot_target().is_some() {
             self.status = PilotStatus::Free;
             return None;
         }
-        let p = self.planet_target.filter(|&p| self.valid(p)).or_else(|| self.nearest_planet())?;
-        self.planet_target = Some(p);
-        self.engage(p).then_some(p)
+        let target = self
+            .target
+            .filter(|&t| self.target_valid(t))
+            .unwrap_or_else(|| self.nearest_planet().map_or(Target::Hole, Target::Planet));
+        self.target = Some(target);
+        self.engage(target).then_some(target)
     }
 
-    /// Fly to `p` and into a circular orbit. The orbit's plane is the one
-    /// the ship already moves in around the planet if it has real angular
-    /// momentum there, else the planet's equator (tilted to contain the
-    /// ship).
-    fn engage(&mut self, p: PlanetRef) -> bool {
+    /// Fly to the target and into a circular orbit. The orbit's plane is
+    /// the one the ship already moves in around the body if it has real
+    /// angular momentum there, else the body's equator (tilted to contain
+    /// the ship).
+    fn engage(&mut self, target: Target) -> bool {
         let saved = self.status;
-        self.status = PilotStatus::Orbit(p);
+        self.status = match target {
+            Target::Planet(p) => PilotStatus::Orbit(p),
+            Target::Hole => PilotStatus::HoleOrbit,
+        };
         self.local_until = f64::NEG_INFINITY;
         self.sync_local();
-        let Some(l) = self.system_of(p) else {
+        let Some(b) = self.parking(target) else {
             self.status = saved;
             return false;
         };
-        let (r, v) = self.relative_to(l, p.planet);
-        let (mu, _) = l.planet_mass(p.planet);
+        let u = self.pilot.e[0];
+        let v_ship = [u[1] / u[0], u[2] / u[0], u[3] / u[0]];
+        let (r, v) = (vec3::sub(self.pilot.position(), b.centre), vec3::sub(v_ship, b.velocity));
+        let mu = b.mu;
         let d = vec3::norm(r);
         let h = vec3::cross(r, v);
-        let axis = l.planet(p.planet).expect("planet").spin_axis;
+        let axis = match target {
+            Target::Planet(p) => self.system_of(p).and_then(|l| l.planet(p.planet)).expect("planet").spin_axis,
+            Target::Hole => [0.0, 0.0, 1.0],
+        };
         let rhat = vec3::normalize(r);
         let in_plane = vec3::axpy(axis, -vec3::dot(axis, rhat), rhat);
         self.orbit_normal = if vec3::norm(h) > 0.3 * d * (mu / d).sqrt() {
@@ -1111,25 +1176,38 @@ impl World {
     /// `√(GM/ρ)` along the orbit. The feed-forward cancels the planet's
     /// gravity (and the star's tide) against the centripetal acceleration
     /// of that motion, so on the circle the engine is off.
-    fn orbit_guidance(&self, p: PlanetRef, per_tau: f64) -> Option<(V3, V3)> {
-        let l = self.system_of(p)?;
-        let i = p.planet;
+    ///
+    /// Around the hole the frame is that of static observers, and the
+    /// circular speed they measure is `√(M/(r − 2M))`; the hole's pull in the
+    /// feed-forward is matched to it so the engine is off on the circle.
+    fn orbit_guidance(&self, target: Target, per_tau: f64) -> Option<(V3, V3)> {
+        let b = self.parking(target)?;
+        let (mu, radius, rc) = (b.mu, b.radius, b.rc);
         let k = &self.kerr;
-        let (t, pos) = (self.pilot.x[0], self.pilot.position());
-        let (xp, vp) = l.planet_state(i, t);
-        let (mu, radius) = l.planet_mass(i);
-        let rc = Self::parking_radius(l, i);
-        let to_planet = self.pilot.local_components(k, vec3::sub(xp, pos));
+        let pos = self.pilot.position();
+        let off = vec3::sub(pos, b.centre);
+        let to_planet = self.pilot.local_components(k, vec3::scale(off, -1.0));
         let r = vec3::scale(to_planet, -1.0);
-        let v = vec3::scale(self.pilot.relative_velocity(k, k.four_velocity(pos, vp)?), -1.0);
-        let g_rel = vec3::sub(l.gravity(t, pos), l.gravity_except(t, xp, Some(i)));
-        let g = self.pilot.local_components(k, g_rel);
-        let n = vec3::normalize(self.pilot.local_components(k, self.orbit_normal));
+        let w = k.four_velocity(pos, b.velocity)?;
+        let v = vec3::scale(self.pilot.relative_velocity(k, w), -1.0);
+        // The rapidity from γ directly: 1 − v² loses everything at high γ.
+        let gamma = (-k.dot(pos, w, self.pilot.e[0])).max(1.0);
+        let g = self.pilot.local_components(k, b.gravity);
 
-        let z = vec3::dot(r, n);
-        let rho_v = vec3::axpy(r, -z, n);
+        // Distances in coordinates, which are the body's frame (the ship's
+        // frame contracts them along its motion, and near the hole curved
+        // space stretches them radially by √(1 + 2M/r)); directions in the
+        // ship frame.
+        let z = vec3::dot(off, self.orbit_normal);
+        let rho_v = vec3::axpy(off, -z, self.orbit_normal);
         let rho = vec3::norm(rho_v);
-        let rhat = if rho > 1e-9 * rc { vec3::scale(rho_v, 1.0 / rho) } else { vec3::any_orthogonal(n) };
+        let n = vec3::normalize(self.pilot.local_components(k, self.orbit_normal));
+        let rhat = if rho > 1e-9 * rc {
+            let d = self.pilot.local_components(k, rho_v);
+            vec3::normalize(vec3::axpy(d, -vec3::dot(d, n), n))
+        } else {
+            vec3::any_orthogonal(n)
+        };
         let along = vec3::cross(n, rhat);
 
         let a_full = self.cfg.thrust * self.cfg.boost_factor;
@@ -1142,14 +1220,14 @@ impl World {
             let m = s.abs();
             -s.signum() * ((2.0 * a_b * m + c * c).sqrt() - c).min((1.0 + a_b * m).acosh())
         };
-        let rho_c = rho.max(radius);
-        let v_t = (mu / rho_c).sqrt();
+        let rho_c = rho.max(radius).max(3.0 * b.rs);
+        let v_t = (mu / (rho_c - b.rs)).sqrt();
         let want = vec3::add(
             vec3::add(vec3::scale(rhat, law(rho - rc)), vec3::scale(n, law(z))),
             vec3::scale(along, v_t.atanh()),
         );
         let speed = vec3::norm(v);
-        let have = if speed > 0.0 { vec3::scale(v, speed.min(1.0 - 1e-16).atanh() / speed) } else { [0.0; 3] };
+        let have = if speed > 0.0 { vec3::scale(v, gamma.acosh() / speed) } else { [0.0; 3] };
         let feed = vec3::sub(vec3::scale(rhat, -v_t * v_t / rho_c), g);
         let accel = clamp_len(vec3::axpy(feed, VELOCITY_GAIN, vec3::sub(want, have)), a_full);
 
@@ -1185,8 +1263,43 @@ impl World {
         spin
     }
 
-    /// Hand control back once the osculating orbit is the parking circle.
-    fn check_orbit(&mut self, p: PlanetRef) {
+    /// What the orbit autopilot flies around, now.
+    fn parking(&self, target: Target) -> Option<Parking> {
+        let (t, pos) = (self.pilot.x[0], self.pilot.position());
+        match target {
+            Target::Planet(p) => {
+                let l = self.system_of(p)?;
+                let i = p.planet;
+                let (centre, velocity) = l.planet_state(i, t);
+                let (mu, radius) = l.planet_mass(i);
+                // The ship's pull relative to the planet's own.
+                let gravity = vec3::sub(l.gravity(t, pos), l.gravity_except(t, centre, Some(i)));
+                Some(Parking { centre, velocity, mu, radius, rc: Self::parking_radius(l, i), gravity, rs: 0.0 })
+            }
+            Target::Hole => {
+                let m = self.kerr.m;
+                let rs = 2.0 * m;
+                let r = self.kerr.radius(pos).max(1.5 * rs);
+                let mut gravity = vec3::scale(pos, -m / (r * r * (r - rs)));
+                if let Some(l) = self.local.as_ref().filter(|l| self.cfg.local_gravity && l.reaches(t, pos)) {
+                    gravity = vec3::add(gravity, l.gravity(t, pos));
+                }
+                Some(Parking {
+                    centre: [0.0; 3],
+                    velocity: [0.0; 3],
+                    mu: m,
+                    radius: self.kerr.r_plus(),
+                    rc: HOLE_PARKING_RADIUS * m,
+                    gravity,
+                    rs,
+                })
+            }
+        }
+    }
+
+    /// Hand control back once the orbit is the parking circle.
+    fn check_orbit(&mut self, target: Target) {
+        let Target::Planet(p) = target else { return self.check_hole_orbit() };
         let Some(l) = self.system_of(p) else { return };
         let i = p.planet;
         let (mu, radius) = l.planet_mass(i);
@@ -1201,7 +1314,26 @@ impl World {
             && (el.semi_major - rc).abs() < 0.001 * rc
         {
             self.status = PilotStatus::Free;
-            self.events.push(WorldEvent::OrbitReached(p));
+            self.events.push(WorldEvent::OrbitReached(target));
+        }
+    }
+
+    /// Around the hole: circular to 0.2%. In Kerr–Schild
+    /// coordinates (as in Schwarzschild's) a circular orbit's coordinate
+    /// speed is √(M/r), to a fraction a/r^{3/2} for the spin.
+    fn check_hole_orbit(&mut self) {
+        let m = self.kerr.m;
+        let pos = self.pilot.position();
+        let u = self.pilot.e[0];
+        let v = [u[1] / u[0], u[2] / u[0], u[3] / u[0]];
+        let r = vec3::norm(pos);
+        let rc = HOLE_PARKING_RADIUS * m;
+        let vc = (m / r).sqrt();
+        let vr = vec3::dot(v, pos) / r;
+        let vt = vec3::norm(vec3::axpy(v, -vr / r, pos));
+        if (r - rc).abs() < 0.002 * rc && vr.abs() < 0.002 * vc && (vt - vc).abs() < 0.002 * vc {
+            self.status = PilotStatus::Free;
+            self.events.push(WorldEvent::OrbitReached(Target::Hole));
         }
     }
 
@@ -1276,7 +1408,7 @@ impl World {
             (0..l.planet_count()).min_by(|&a, &b| dist(a).total_cmp(&dist(b))).map(|i| l.planet_ref(i))
         };
         let p =
-            self.flight_planet().or(self.planet_target.filter(|&p| self.system_of(p).is_some())).or_else(nearest)?;
+            self.flight_planet().or(self.planet_target().filter(|&p| self.system_of(p).is_some())).or_else(nearest)?;
         let l = self.system_of(p)?;
         let planet = l.planet(p.planet)?;
         let (mu, radius) = l.planet_mass(p.planet);
@@ -1293,7 +1425,7 @@ impl World {
             periapsis_km: (el.periapsis - radius) * KM_PER_M,
             apoapsis_km: (el.apoapsis - radius) * KM_PER_M,
             period_s: el.period * SECONDS_PER_M,
-            targeted: self.planet_target == Some(p),
+            targeted: self.planet_target() == Some(p),
             landed: matches!(self.status, PilotStatus::Landed { .. }),
         })
     }
@@ -1528,7 +1660,7 @@ mod tests {
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .expect("a rocky planet");
         let p = PlanetRef { star: sys.star, generation: w.cluster.bodies[sys.star].generation, planet: i };
-        w.planet_target = Some(p);
+        w.target = Some(Target::Planet(p));
         (w, p)
     }
 
@@ -1627,6 +1759,40 @@ mod tests {
         assert!(rel.ship_velocity[0] / speed < -0.999, "{:?}", rel.ship_velocity);
     }
 
+    /// From 2000 M out and at rest, the autopilot flies into the parking
+    /// orbit around the hole, hands back, and the ship coasts on a circle.
+    #[test]
+    fn orbit_autopilot_parks_at_the_hole() {
+        let mut w = World::new(WorldConfig::sgr_a(400, 1));
+        let pos = [1500.0, -1200.0, 400.0];
+        let mut pilot = Pilot::new(&w.kerr, pos, [0.0; 3], vec3::scale(pos, -1.0), [0.0, 0.0, 1.0]).unwrap();
+        pilot.x[0] = w.pilot.x[0];
+        w.pilot = pilot;
+        w.local_until = f64::NEG_INFINITY;
+        assert!(w.set_target(Target::Hole));
+        assert_eq!(w.toggle_orbit_autopilot(), Some(Target::Hole));
+        let input = Input { autopilot: -1, ..Default::default() };
+        let mut frames = 0;
+        while !w.events.contains(&WorldEvent::OrbitReached(Target::Hole)) {
+            w.step(1.0 / 60.0, &input);
+            assert!(!w.events.contains(&WorldEvent::HorizonCrossed));
+            frames += 1;
+            assert!(frames < 20_000, "not parked: {:?} at r = {:.2}", w.status, w.kerr.radius(w.pilot.position()));
+        }
+        assert_eq!(w.status, PilotStatus::Free);
+        // Two orbits at the most warp allowed.
+        w.cfg.time_scale = 1e9;
+        let r0 = w.kerr.radius(w.pilot.position());
+        let (mut lo, mut hi) = (r0, r0);
+        for _ in 0..600 {
+            w.step(1.0 / 60.0, &input);
+            let r = w.kerr.radius(w.pilot.position());
+            (lo, hi) = (lo.min(r), hi.max(r));
+        }
+        eprintln!("parked after {frames} frames; then r {lo:.3}..{hi:.3} M");
+        assert!((r0 - HOLE_PARKING_RADIUS).abs() < 0.2 && hi - lo < 1.0, "r {lo}..{hi}");
+    }
+
     #[test]
     fn orbit_autopilot_flies_in_from_an_au() {
         let (mut w, p) = planet_world();
@@ -1638,12 +1804,12 @@ mod tests {
         let vp = l.planet_state(p.planet, w.cluster.t).1;
         let vs = l.star_state(w.cluster.t).1;
         put_near(&mut w, p, vec3::scale(normal, units::AU), vec3::sub(vs, vp));
-        assert_eq!(w.toggle_orbit_autopilot(), Some(p));
+        assert_eq!(w.toggle_orbit_autopilot(), Some(Target::Planet(p)));
         let input = Input { autopilot: -1, ..Default::default() };
         let mut reached = None;
         for frame in 0..60 * 60 {
             w.step(1.0 / 60.0, &input);
-            if w.events.contains(&WorldEvent::OrbitReached(p)) {
+            if w.events.contains(&WorldEvent::OrbitReached(Target::Planet(p))) {
                 reached = Some(frame);
                 break;
             }
@@ -1667,7 +1833,8 @@ mod tests {
     #[test]
     fn orbit_autopilot_crosses_the_cluster() {
         let mut w = World::new(WorldConfig::sgr_a(400, 1));
-        let p = w.toggle_orbit_autopilot().expect("a planet in range");
+        let target = w.toggle_orbit_autopilot().expect("a planet in range");
+        assert!(matches!(target, Target::Planet(_)));
         // Hundreds of AU away: the transfer is relativistic (γ in the
         // hundreds) and the warp is high until the approach.
         let input = Input { autopilot: -1, ..Default::default() };
@@ -1675,7 +1842,7 @@ mod tests {
         let reached = (0..60 * 60).any(|_| {
             w.step(1.0 / 60.0, &input);
             max_gamma = max_gamma.max(w.telemetry().gamma);
-            w.events.contains(&WorldEvent::OrbitReached(p))
+            w.events.contains(&WorldEvent::OrbitReached(target))
         });
         assert!(reached && max_gamma > 10.0, "max γ {max_gamma}: {:?}", w.telemetry());
     }
@@ -1716,7 +1883,9 @@ mod tests {
             without.step(1.0 / 60.0, &input);
         }
         assert!(with.local.is_none() && with.telemetry().planet.is_none());
-        assert!(with.warp_limit().is_infinite() && with.throttle == 1.0);
+        // Out here only the hole limits the warp, far above the most the
+        // pilot can set (10⁷ × real time).
+        assert!(with.warp_limit() * SECONDS_PER_M > 1e7 && with.throttle == 1.0);
         let d = vec3::norm(vec3::sub(with.pilot.position(), without.pilot.position()));
         assert!(d < 1e-9 * vec3::norm(with.pilot.position()), "paths differ by {d}");
     }

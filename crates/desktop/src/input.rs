@@ -76,7 +76,7 @@ pub enum Action {
     ThrustLimit(f64),
     /// Engage or release the orbit autopilot.
     OrbitAutopilot,
-    /// Target the next planet.
+    /// Target the next planet (then Sgr A*).
     NextTarget,
     /// Cycle eye → camera → astrograph.
     NextOptics,

@@ -6,7 +6,7 @@ use crate::hud;
 use crate::input::{Action, Controls, DRAG_RAD_PER_PX};
 use crate::map::{Map, Pick};
 use kerr::units::SECONDS_PER_M;
-use kerr::world::{PilotStatus, WorldEvent};
+use kerr::world::{PilotStatus, Target, WorldEvent};
 use render_hq::{Gpu, Session};
 use std::sync::Arc;
 use std::time::Instant;
@@ -113,7 +113,8 @@ impl State {
 
         // SAS steers unless an autopilot does.
         let world = &self.session.world;
-        let autopilot = matches!(world.status, PilotStatus::Orbit(_) | PilotStatus::Autopilot(_));
+        let autopilot =
+            matches!(world.status, PilotStatus::Orbit(_) | PilotStatus::HoleOrbit | PilotStatus::Autopilot(_));
         let hold = if self.controls.sas && !autopilot { Nav::new(world).hold(self.controls.sas_mode) } else { None };
         let input = self.controls.sample(dt, hold);
         self.session.advance(dt, &input);
@@ -205,25 +206,25 @@ impl State {
             }
             Action::OrbitAutopilot => {
                 let world = &mut self.session.world;
-                let was_on = matches!(world.status, PilotStatus::Orbit(_));
+                let was_on = matches!(world.status, PilotStatus::Orbit(_) | PilotStatus::HoleOrbit);
                 let note = match world.toggle_orbit_autopilot() {
-                    Some(p) => {
+                    Some(t) => {
                         // The engine and the rotation controls would take
                         // over again at once.
                         self.controls.throttle = 0.0;
                         self.controls.stop_spin();
-                        format!("autopilot: into orbit around {}", hud::planet_name(world, p))
+                        format!("autopilot: into orbit around {}", hud::target_name(world, t))
                     }
                     None if was_on => "autopilot off".into(),
-                    None => "no planet within 2000 AU".into(),
+                    None => "the autopilot can't reach the target".into(),
                 };
                 self.notify(note);
             }
             Action::NextTarget => {
                 let world = &mut self.session.world;
                 let note = match world.cycle_target() {
-                    Some(p) => format!("target: {}", hud::planet_name(world, p)),
-                    None => "no planet within 2000 AU".into(),
+                    Some(t) => format!("target: {}", hud::target_name(world, t)),
+                    None => "nothing to target".into(),
                 };
                 self.notify(note);
             }
@@ -295,10 +296,13 @@ impl State {
         let note = if double {
             self.map.focus_on(world, pick);
             format!("map: {}", Map::name(world, pick))
-        } else if let Pick::Planet(p) = pick
-            && world.set_target(p)
+        } else if let Some(target) = match pick {
+            Pick::Planet(p) => Some(Target::Planet(p)),
+            Pick::Hole => Some(Target::Hole),
+            _ => None,
+        } && world.set_target(target)
         {
-            format!("target: {}", hud::planet_name(world, p))
+            format!("target: {} (O flies there)", hud::target_name(world, target))
         } else {
             format!("{} (double click to centre)", Map::name(world, pick))
         };

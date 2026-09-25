@@ -75,7 +75,7 @@ OPTIONS:
                         stellar-mass black hole, facing it (50: an Einstein ring
                         about 20° across around a 5° shadow)
     --burn              Headless: thrust forward with boost during the flight
-    --autopilot         Headless: fly into orbit around the nearest planet
+    --autopilot         Headless: fly into orbit around the nearest planet (else Sgr A*)
     --chase             Start with the chase camera (the ship in view)
     --hud               Headless: draw the HUD over the shot
     --map               Headless: shoot the map instead
@@ -96,7 +96,8 @@ CONTROLS (like Kerbal Space Program; F1 shows them in the window):
     gravity dominates, else the hole's frame.
     O orbit autopilot: fly to the targeted (else nearest) planet and into a
     circular orbit above its atmosphere; O again or the throttle takes over.
-    Tab targets the next planet of the system.
+    Tab targets the next planet of the system, then Sgr A* (50 M out, where
+    the shadow spans about 12 degrees); O with no planet in range flies there.
     M map: right drag turns it, the wheel zooms, F cycles the focus (ship,
     the body you orbit, the target, its star, the hole), a click on a planet
     targets it, a double click centres on anything, Home resets it.

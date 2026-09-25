@@ -14,7 +14,7 @@ use kerr::local::PlanetRef;
 use kerr::planets::{AU_KM, KM_PER_M, PlanetKind, System};
 use kerr::units::AU;
 use kerr::vec3::{self, V3};
-use kerr::world::{Reference, World};
+use kerr::world::{Reference, Target, World};
 use render_hq::overlay::{Overlay, Rgba};
 use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
@@ -292,8 +292,9 @@ impl Map {
             Reference::Star(i) => list.push(Pick::Star(i)),
             Reference::Hole => {}
         }
-        if let Some(t) = &nav.target {
-            list.extend([Pick::Planet(t.planet), Pick::Star(t.planet.star)]);
+        match nav.target.as_ref().map(|t| t.target) {
+            Some(Target::Planet(p)) => list.extend([Pick::Planet(p), Pick::Star(p.star)]),
+            Some(Target::Hole) | None => {}
         }
         list.push(Pick::Hole);
         list.dedup();
@@ -363,7 +364,8 @@ impl Map {
         // Labels: anchor, radius of what they name (pixels), text, colour.
         let mut labels: Vec<([f32; 2], f32, String, Rgba)> = Vec::new();
         let hovered = cursor.and_then(|c| self.pick(c, ui));
-        let target = world.planet_target;
+        let target = world.planet_target();
+        let hole_targeted = world.target == Some(Target::Hole);
         let local_star = nav.star.as_ref().and(world.local.as_ref()).map(|l| l.star);
         let ship = world.pilot.position();
         let body = vec3::sub(ship, nav.rel.offset);
@@ -371,9 +373,8 @@ impl Map {
         if nav.rel.reference != Reference::Hole {
             spheres.push((body, nav.rel.radius));
         }
-        if let Some(tg) = &nav.target
-            && let (Some((x, _)), Some(r)) =
-                (flight::planet_state(world, tg.planet), self.planet_radius(world, tg.planet))
+        if let Some(p) = target
+            && let (Some((x, _)), Some(r)) = (flight::planet_state(world, p), self.planet_radius(world, p))
         {
             spheres.push((x, r));
         }
@@ -403,8 +404,11 @@ impl Map {
             let r = (cam.pixels(world.kerr.r_plus(), [0.0; 3]) as f32).max(4.0 * ui);
             o.disc(p, r + 2.0 * ui, [1.0, 0.55, 0.2, 0.9]);
             o.disc(p, r, [0.0, 0.0, 0.0, 1.0]);
+            if hole_targeted {
+                o.ring(p, r + 7.0 * ui, 1.5 * ui, TARGET);
+            }
             picks.push((p, Pick::Hole));
-            labels.push((p, r, "Sgr A*".into(), WARN));
+            labels.push((p, r, "Sgr A*".into(), if hole_targeted { TARGET } else { WARN }));
         }
 
         // Stars, compact objects and planetary systems.
@@ -579,7 +583,7 @@ impl Map {
             (format!("MAP: {}", Self::name(world, self.focus)), PROGRADE),
             ("right drag turns, wheel zooms".into(), DIM),
             ("F focus, Home reset, M back".into(), DIM),
-            ("click a planet to target it".into(), DIM),
+            ("click a planet or Sgr A*: target".into(), DIM),
             ("ringed stars have planets".into(), DIM),
         ];
         let line = 10.0 * s;

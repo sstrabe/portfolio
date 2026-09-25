@@ -150,13 +150,15 @@ Controls work like Kerbal Space Program's (`F1` lists them in the window):
 - `R` toggles RCS: `H`/`N` forward/back, `J`/`L` left/right, `I`/`K` up/down.
 - `B` (held) brakes to the local rest frame: the planet or star whose
   gravity dominates, else the hole's frame.
-- `O` flies to the targeted (else nearest) planet and into a circular orbit
-  above its atmosphere, warping time on the way. `O` again or the throttle
-  takes over. `Tab` targets the next planet of the system.
+- `O` flies to the target and into a circular orbit, warping time on the
+  way: above a planet's atmosphere, or 50 M from Sgr A* (where its shadow
+  spans about 12°). With no target it picks the nearest planet, else Sgr A*.
+  `O` again or the throttle takes over. `Tab` targets the next planet of the
+  system, then Sgr A*.
 - `M` opens the map: the cluster, the star systems (ringed stars have
   planets) and your orbit. Right drag turns it, the wheel zooms from low
   orbit out to the whole cluster, `F` cycles the focus, clicking a planet
-  targets it, and double-clicking centres on anything.
+  or Sgr A* targets it, and double-clicking centres on anything.
 - `,` / `.` halve or double the time warp, and `/` returns to real time.
   Near a body the warp is capped so an orbit takes at least 5 s.
 - `V` switches between first person and the chase camera; right drag turns

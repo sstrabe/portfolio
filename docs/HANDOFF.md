@@ -212,6 +212,7 @@ yards", and a detailed design followed (`docs/planets.md`). Status:
 | Ship: mesh, chase camera, PBR, shadows | done (software BVH) |
 | Stellar-mass hole lensing | done |
 | KSP-style controls, HUD with navball, map view (`render-hq/src/overlay.rs` draws both) | done |
+| Targets: planets or Sgr A* (`world::Target`); orbit autopilot to either (hole: 50 M, static-observer frame) | done |
 | RT-core terrain and ship, surface maps, 200–1600 nm atmosphere tables, presets (Mars, Venus, Titan, Jupiter, Neptune) | not started |
 
 Suggested next steps, in order: fly it in the window with the owner and

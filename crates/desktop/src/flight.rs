@@ -28,9 +28,9 @@ const NOSE: Rgba = [1.0, 0.62, 0.15, 1.0];
 const SKY: Rgba = [0.2, 0.42, 0.72, 0.92];
 const GROUND: Rgba = [0.5, 0.33, 0.2, 0.92];
 
-/// The targeted planet as seen from the ship.
+/// The target (a planet or Sgr A*) as seen from the ship.
 pub struct Target {
-    pub planet: PlanetRef,
+    pub target: kerr::world::Target,
     pub name: String,
     /// Apparent direction, ship frame.
     pub dir: V3,
@@ -118,6 +118,7 @@ impl Nav {
             PilotStatus::Landed { planet, .. } => return format!("LANDED on {}", hud::planet_name(world, planet)),
             PilotStatus::Docked { .. } => return "DOCKED".into(),
             PilotStatus::Orbit(p) => return format!("AUTOPILOT to {}", hud::planet_name(world, p)),
+            PilotStatus::HoleOrbit => return "AUTOPILOT to Sgr A*".into(),
             _ => {}
         }
         let e = &self.elements;
@@ -152,15 +153,19 @@ pub fn planet_state(world: &World, p: PlanetRef) -> Option<(V3, V3)> {
 }
 
 fn target(world: &World) -> Option<Target> {
-    let p = world.planet_target?;
+    let target = world.target?;
     let (k, pilot) = (&world.kerr, &world.pilot);
-    let (x, v) = planet_state(world, p)?;
+    // The hole's frame here is that of static observers.
+    let (x, v) = match target {
+        kerr::world::Target::Planet(p) => planet_state(world, p)?,
+        kerr::world::Target::Hole => ([0.0; 3], [0.0; 3]),
+    };
     let d = vec3::sub(x, pilot.position());
     let w = k.four_velocity(pilot.position(), v)?;
     let geometric = vec3::normalize(pilot.local_components(k, d));
     Some(Target {
-        planet: p,
-        name: hud::planet_name(world, p),
+        target,
+        name: hud::target_name(world, target),
         dir: pilot.sky_direction(k, d),
         distance: vec3::norm(d),
         closing: -vec3::dot(pilot.relative_velocity(k, w), geometric),
@@ -666,9 +671,9 @@ const HELP: [(&str, &str); 26] = [
     ("H / N  J / L  I / K", "RCS: fwd/back, left/right, up/down"),
     ("B (hold)", "brake to the local frame"),
     ("O", "orbit autopilot to the target"),
-    ("Tab", "next planet as the target"),
+    ("Tab", "next target: planets, then Sgr A*"),
     (",  .  /", "time warp down, up, 1x"),
-    ("M", "map (click a planet: target it)"),
+    ("M", "map (click a planet or Sgr A*)"),
     ("F", "map: focus ship, body, target, hole"),
     ("right drag, wheel", "turn and zoom the camera or map"),
     ("Home", "reset the camera or map"),

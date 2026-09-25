@@ -4,7 +4,7 @@ use crate::input::ENGINE;
 use kerr::local::PlanetRef;
 use kerr::planets::{self, AU_KM, PlanetKind};
 use kerr::units::G0;
-use kerr::world::{PlanetTelemetry, Telemetry, World, WorldEvent};
+use kerr::world::{PlanetTelemetry, Target, Telemetry, World, WorldEvent};
 
 pub fn kind_name(kind: PlanetKind) -> &'static str {
     match kind {
@@ -15,6 +15,14 @@ pub fn kind_name(kind: PlanetKind) -> &'static str {
         PlanetKind::Lava => "lava world",
         PlanetKind::GasGiant => "gas giant",
         PlanetKind::IceGiant => "ice giant",
+    }
+}
+
+/// A planet's name, or "Sgr A*".
+pub fn target_name(world: &World, target: Target) -> String {
+    match target {
+        Target::Planet(p) => planet_name(world, p),
+        Target::Hole => "Sgr A*".into(),
     }
 }
 
@@ -82,7 +90,7 @@ pub fn note(world: &World, ev: &WorldEvent) -> Option<String> {
         WorldEvent::Landed { speed } if speed < 0.1 => format!("touched down at {:.0} m/s", speed * 1000.0),
         WorldEvent::Landed { speed } => format!("hit the ground at {speed:.2} km/s (the hull held)"),
         WorldEvent::StarContact => "flew into the star: moved back out to 10 stellar radii".into(),
-        WorldEvent::OrbitReached(p) => format!("in orbit around {}: autopilot off", planet_name(world, p)),
+        WorldEvent::OrbitReached(t) => format!("in orbit around {}: autopilot off", target_name(world, t)),
         WorldEvent::AutopilotOff => "autopilot off".into(),
         WorldEvent::Throttle(x) => {
             format!("thrust limit {x:.0e}: full throttle {}", gees(ENGINE * world.cfg.thrust * x / G0))

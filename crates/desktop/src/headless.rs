@@ -16,8 +16,8 @@ pub fn run(o: &Options) -> Result<(), String> {
         park_near_hole(&mut world, k)?;
     }
     if o.autopilot {
-        let p = world.toggle_orbit_autopilot().ok_or("no planet for the autopilot")?;
-        println!("autopilot: into orbit around {}", crate::hud::planet_name(&world, p));
+        let t = world.toggle_orbit_autopilot().ok_or("the autopilot can't reach the target")?;
+        println!("autopilot: into orbit around {}", crate::hud::target_name(&world, t));
     }
     let (n, cap) = (world.cluster.len() as u32, world.cluster.history.capacity() as u32);
     let gpu = pollster::block_on(Gpu::new(crate::instance(), None, (w, h), n, cap))?;
