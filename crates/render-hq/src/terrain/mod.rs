@@ -5,6 +5,7 @@
 //! asks the GPU for it ([`probe::Probe`]) rather than keeping a second copy
 //! that could drift from what is drawn.
 
+pub mod cube;
 pub mod probe;
 
 use kerr::vec3::{self, V3};

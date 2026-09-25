@@ -34,6 +34,8 @@ pub struct Sample {
     pub fill: u32,
     /// The macro channels (see `terrain_macro` in `terrain.wgsl`).
     pub channels: [f32; 4],
+    /// Hotspot islands here: (height they add, km; basalt share; reef).
+    pub hotspot: [f32; 3],
 }
 
 pub struct Probe {
@@ -111,7 +113,7 @@ impl Probe {
         let uniform = init("probe params", bytemuck::bytes_of(&params), U::UNIFORM);
         let packed: Vec<[f32; 4]> = dirs.iter().map(|d| [d[0] as f32, d[1] as f32, d[2] as f32, 0.0]).collect();
         let input = init("probe directions", bytemuck::cast_slice(&packed), U::STORAGE);
-        let size = (dirs.len() * 2 * 16) as u64;
+        let size = (dirs.len() * 3 * 16) as u64;
         let output = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("probe output"),
             size,
@@ -153,8 +155,14 @@ impl Probe {
                 let values: &[[f32; 4]] = bytemuck::cast_slice(&data);
                 (0..dirs.len())
                     .map(|i| {
-                        let (a, m) = (values[2 * i], values[2 * i + 1]);
-                        Sample { surface_km: a[0] as f64, solid_km: a[1] as f64, fill: a[2] as u32, channels: m }
+                        let (a, m, h) = (values[3 * i], values[3 * i + 1], values[3 * i + 2]);
+                        Sample {
+                            surface_km: a[0] as f64,
+                            solid_km: a[1] as f64,
+                            fill: a[2] as u32,
+                            channels: m,
+                            hotspot: [h[0], h[1], h[2]],
+                        }
                     })
                     .collect()
             }

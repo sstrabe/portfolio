@@ -375,8 +375,11 @@ fn tn_macro_ocean(tp: TerrainParams, q: vec3<f32>, lod: f32) -> vec4<f32> {
     // Uplands and plains: hills where a low-frequency field is high.
     let upland = smoothstep(-0.15, 0.35, tn_fbm(qc * 3.0 + vec3<f32>(7.7), seed + 12u, 2.0, 0.5));
     let hills = k * mix(0.25, 1.2, upland) * tn_fbm(qc * 8.0, seed + 6u, tn_macro_octaves(tp, 8.0, lod), 0.5);
-    let h = mix(sea + mid_ridge - trench, land, land_w) + mountains + hills * mix(0.3, 1.0, land_w);
+    var h = mix(sea + mid_ridge - trench, land, land_w) + mountains + hills * mix(0.3, 1.0, land_w);
     let orog_out = clamp(orog + 0.35 * upland, 0.0, 1.0);
+    // Hotspot island chains rise from the sea floor.
+    let hot = tn_hotspots(tp, q);
+    h += hot.x;
 
     // Hadley, Ferrel and polar cells: wet at the equator and near 60°,
     // dry near 30° and at the poles; drier far inland.
@@ -384,7 +387,80 @@ fn tn_macro_ocean(tp: TerrainParams, q: vec3<f32>, lod: f32) -> vec4<f32> {
     let cells = 0.5 + 0.5 * cos(6.0 * lat);
     let moist = clamp(0.25 + 0.6 * cells - 1.8 * max(e - 0.08, 0.0) + 0.5 * tn_fbm(qc * 5.0, seed + 7u, 2.0, 0.5), 0.0, 1.0);
     let rock = smoothstep(0.1, 0.35, tn_fbm(qc * 4.0, seed + 8u, 2.0, 0.5) + 0.25 * conv * belt);
-    return vec4<f32>(h, orog_out, moist, rock);
+    // Volcanic islands are basalt.
+    return vec4<f32>(h, orog_out, moist, max(rock, hot.y));
+}
+
+// ---------------------------------------------------------------------------
+// Hotspot island chains (Hawaii, the Societies, the Marquesas): a mantle
+// plume under a moving plate builds a line of shield volcanoes, the
+// youngest over the plume, each older one farther along the plate's
+// motion. Shields rise ~10 km from the sea floor (Mauna Kea stands 4.2 km
+// above the sea on a 5 km deep floor) with slopes of a few degrees,
+// stretched along rift zones; with age they sink (the lithosphere cools),
+// erode into radial valleys and drown, leaving reefs.
+// Returns (height to add, km; basalt share 0–1; reef 0–1).
+// ---------------------------------------------------------------------------
+fn tn_hotspots(tp: TerrainParams, q: vec3<f32>) -> vec3<f32> {
+    let n = 3u + tp.seed % 4u;
+    var add = 0.0;
+    var basalt = 0.0;
+    var reef = 0.0;
+    for (var i = 0u; i < n; i++) {
+        let r = tn_rand3(tp.seed * 131u + i * 7u + 3u);
+        let z = r.x * 1.4 - 0.7;
+        let phi = r.y * TAU;
+        let spot = vec3<f32>(sqrt(1.0 - z * z) * cos(phi), sqrt(1.0 - z * z) * sin(phi), z);
+        // Islands every ~130 km along the chain, 8 of them.
+        let spacing = (110.0 + 50.0 * r.z) / tp.radius;
+        // Skip chains far from q (the whole chain lies within 9 steps).
+        if (dot(q, spot) < cos(9.0 * spacing + 0.03)) {
+            continue;
+        }
+        let side = tn_rand3(tp.seed * 977u + i) * 2.0 - 1.0;
+        let along = normalize(side - dot(side, spot) * spot);
+        for (var k = 0u; k < 8u; k++) {
+            let rk = tn_rand3(tp.seed * 313u + i * 17u + k);
+            // Older islands lie further along −along, a little off line.
+            let a = f32(k) * spacing * (0.8 + 0.4 * rk.x);
+            let off = (rk.y - 0.5) * 0.6 * spacing;
+            let across = cross(spot, along);
+            let c = normalize(spot * cos(a) - along * sin(a) + across * off);
+            let d_ang = acos(clamp(dot(q, c), -1.0, 1.0));
+            let d = d_ang * tp.radius;
+            if (d > 220.0) {
+                continue;
+            }
+            let age = f32(k) * (0.9 + 0.5 * rk.z);  // million years
+            // Rift zones stretch the shield along a random direction.
+            let rift = normalize(cross(c, tn_rand3(tp.seed * 71u + i * 13u + k) * 2.0 - 1.0));
+            let t = q - c * dot(q, c);
+            let along_rift = dot(t, rift) * tp.radius;
+            let across_rift = dot(t, cross(c, rift)) * tp.radius;
+            let w = 30.0 + 10.0 * rk.x + 3.0 * age;
+            let rho = sqrt(pow(along_rift / (1.6 * w), 2.0) + pow(across_rift / w, 2.0));
+            // Amplitude above the floor: 10 km young, sinking ~0.35 km/Myr
+            // and wearing down.
+            let amp = max(10.0 * exp(-age / 9.0) - 0.35 * age, 0.0);
+            var shield = amp * exp(-pow(rho, 1.4));
+            // Radial valleys cut into the older, rain-washed flanks.
+            if (age > 1.0) {
+                let bearing = atan2(across_rift, along_rift);
+                let n_valleys = 14.0 + 6.0 * rk.y;
+                let v = pow(0.5 + 0.5 * cos(n_valleys * bearing + 3.0 * tn_noise(q * tp.radius / 8.0, tp.seed + k)), 6.0);
+                shield *= 1.0 - min(0.08 * age, 0.5) * v * smoothstep(0.15, 0.6, rho) * smoothstep(1.8, 0.8, rho);
+            }
+            // A caldera on the young summits.
+            shield -= 0.15 * amp * exp(-pow(rho / 0.08, 2.0)) * step(age, 2.0);
+            add = max(add, shield);
+            basalt = max(basalt, smoothstep(1.6, 0.8, rho) * step(0.5, amp));
+            // Fringing reef and atoll rings where the flank meets the sea,
+            // in the tropics.
+            let tropical = smoothstep(0.55, 0.4, abs(q.z));
+            reef = max(reef, tropical * exp(-pow((rho - 1.1 - 0.05 * age) / 0.12, 2.0)) * smoothstep(0.5, 3.0, age));
+        }
+    }
+    return vec3<f32>(add, basalt, reef);
 }
 
 fn tn_macro_rocky(tp: TerrainParams, q: vec3<f32>, lod: f32) -> vec4<f32> {

@@ -68,7 +68,9 @@ OPTIONS:
                           Earth-like world at latitude LAT (degrees, default 20) at
                           local solar time HOUR (default 15), HEIGHT metres above the
                           ground (default 1.7); SITE here (default), land (the nearest
-                          land) or coast (the nearest shore, facing the sea); VIEW
+                          land), coast (the nearest shore, facing the sea) or island
+                          (the shore of the tallest young volcanic island in the
+                          tropics, at local time HOUR; LAT is ignored); VIEW
                           horizon (the sun on the right, or the sea), sun, down, sky
     --look NEBULA[@PC]  Face a nebula (sgra, minispiral, cnd, sgra-east, pwn) instead;
                         with @PC, from PC parsecs away on Earth's side, at rest

@@ -52,6 +52,10 @@ pub enum Site {
     Land,
     /// On the nearest coast, a little inland, looking out to sea.
     Coast,
+    /// On the shore of the tallest young volcanic island in the tropics
+    /// (a hotspot chain's newest, like Hawaii's Big Island), at the local
+    /// time asked for.
+    Island,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,6 +199,7 @@ fn parse_ground<'a>(s: &str, parts: impl Iterator<Item = &'a str>) -> Result<Gro
         "here" => Some(Site::Here),
         "land" => Some(Site::Land),
         "coast" => Some(Site::Coast),
+        "island" => Some(Site::Island),
         _ => None,
     }) {
         g.site = site;
@@ -243,6 +248,21 @@ fn on_ground(world: &mut World, g: GroundStart, gpu: &Gpu) -> Result<String, Str
     let planet = sys.planets[i].clone();
     let body = &world.cluster.bodies[sys.star];
     let pref = PlanetRef { star: sys.star, generation: body.generation, planet: i };
+    let probe = Probe::new(&gpu.device);
+    // An island site is fixed on the ground: find it first, then let the
+    // planet turn until it's the hour asked for there.
+    let island = if g.site == Site::Island {
+        let (q, hour_now) = find_island(world, &sys, i, &probe, gpu)?;
+        let solar_day_s = solar_day(&planet, &sys);
+        let wait_h = (g.hour - hour_now).rem_euclid(24.0);
+        let t = world.cluster.t + wait_h / 24.0 * solar_day_s / SECONDS_PER_M;
+        world.cluster.advance_to(t);
+        world.pilot.x[0] = t;
+        Some(q)
+    } else {
+        None
+    };
+    let body = &world.cluster.bodies[sys.star];
     // Fly in to a few radii, co-moving, so the physics takes up this system.
     let (off_km, vel_km_s) = sys.planet_state(i, world.cluster.t);
     let away = vec3::scale(vec3::normalize(vec3::scale(off_km, -1.0)), 3.0 * planet.radius_km);
@@ -270,7 +290,8 @@ fn on_ground(world: &mut World, g: GroundStart, gpu: &Gpu) -> Result<String, Str
     );
     let angle = planet.rotation(tc * SECONDS_PER_M);
     let axes = terrain::body_axes(spin, angle);
-    let probe = Probe::new(&gpu.device);
+    // The island's summit, where it is now.
+    let up = island.map_or(up, |q| terrain::from_body(&axes, q));
     let terrain_at = |dirs: &[V3]| {
         let q: Vec<V3> = dirs.iter().map(|&d| terrain::to_body(&axes, d)).collect();
         probe.sample(&gpu.device, &gpu.queue, &planet, &q, 1e-4)
@@ -281,10 +302,13 @@ fn on_ground(world: &mut World, g: GroundStart, gpu: &Gpu) -> Result<String, Str
     let mut sea_side = None;
     let up = match g.site {
         Site::Here => up,
-        Site::Land | Site::Coast => {
-            let cands = cap_points(up, 25f64.to_radians(), 20_000);
+        Site::Land | Site::Coast | Site::Island => {
+            // Around an island summit look for its own shore (a cap of
+            // ~150 km); elsewhere within 25°.
+            let cap = if g.site == Site::Island { 150.0 / planet.radius_km } else { 25f64.to_radians() };
+            let cands = cap_points(up, cap, 20_000);
             let samples = terrain_at(&cands);
-            let land = samples.iter().position(dry).ok_or("no land within 25° of the spot")?;
+            let land = samples.iter().position(dry).ok_or("no land near the spot")?;
             if g.site == Site::Land {
                 cands[land]
             } else {
@@ -349,11 +373,51 @@ fn on_ground(world: &mut World, g: GroundStart, gpu: &Gpu) -> Result<String, Str
         (1, true) => format!("on the sea ({:.0} m deep)", -ground.solid_km * 1000.0),
         _ => format!("on land {:.0} m above sea level", ground.surface_km * 1000.0),
     };
-    let what = if g.site == Site::Coast { format!("{what}, 30 m from the shore, facing the sea") } else { what };
+    let what = match g.site {
+        Site::Coast => format!("{what}, 30 m from the shore, facing the sea"),
+        Site::Island => format!("{what} on a young volcanic island, 30 m from the shore, facing the sea"),
+        _ => what,
+    };
     Ok(format!(
         "standing {what} on a {:?} world of {:.0} km radius, latitude {:.1}°, {:.1} h local time, sun {sun_elevation:.0}° up ({:?} view)",
         planet.kind, planet.radius_km, g.latitude_deg, g.hour, g.view
     ))
+}
+
+/// The summit (body-fixed direction) of the tallest young hotspot island
+/// within 25° of the equator, and its local solar time now (hours).
+fn find_island(world: &World, sys: &planets::System, i: usize, probe: &Probe, gpu: &Gpu) -> Result<(V3, f64), String> {
+    let planet = &sys.planets[i];
+    let tropics = cap_points([0.0, 0.0, 1.0], std::f64::consts::PI, 400_000)
+        .into_iter()
+        .filter(|q| q[2].abs() < 25f64.to_radians().sin())
+        .collect::<Vec<_>>();
+    let samples = probe.sample(&gpu.device, &gpu.queue, planet, &tropics, 5.0);
+    let (q, _) = tropics
+        .iter()
+        .zip(&samples)
+        .filter(|(_, s)| s.surface_km > 0.0 && s.hotspot[0] > 1.0)
+        .max_by(|a, b| a.1.hotspot[0].total_cmp(&b.1.hotspot[0]))
+        .ok_or("no volcanic islands in the tropics of this world")?;
+    // Local solar time now: the angle between the site and the subsolar
+    // meridian, in the planet frame.
+    let t = world.cluster.t;
+    let angle = planet.rotation(t * SECONDS_PER_M);
+    let up = terrain::from_body(&terrain::body_axes(planet.spin_axis, angle), *q);
+    let (off_km, _) = sys.planet_state(i, t);
+    let to_star = vec3::normalize(vec3::scale(off_km, -1.0));
+    let spin = planet.spin_axis;
+    let noon = vec3::normalize(vec3::axpy(to_star, -vec3::dot(to_star, spin), spin));
+    let east = vec3::cross(spin, noon);
+    let h = vec3::dot(up, east).atan2(vec3::dot(up, noon));
+    Ok((*q, (12.0 + h.to_degrees() / 15.0).rem_euclid(24.0)))
+}
+
+/// Length of the planet's solar day, seconds.
+fn solar_day(planet: &planets::Planet, sys: &planets::System) -> f64 {
+    let sidereal = planet.rotation_period_s;
+    let year = planet.orbit.period_s(sys.star_gm());
+    1.0 / (1.0 / sidereal - 1.0 / year)
 }
 
 /// `n` unit directions spread evenly over a cap of angular radius `radius`
