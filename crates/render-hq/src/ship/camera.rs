@@ -199,13 +199,13 @@ mod tests {
             }
             assert!(vec3::norm(vec3::sub(vec3::cross(a[0], a[1]), a[2])) < 1e-9);
             // Each step turns the view by the step alone: no jumps.
-            for i in 0..3 {
-                assert!(vec3::norm(vec3::sub(a[i], prev[i])) < 0.02, "{k}");
+            for (now, before) in a.iter().zip(&prev) {
+                assert!(vec3::norm(vec3::sub(*now, *before)) < 0.02, "{k}");
             }
             prev = a;
         }
-        for i in 0..3 {
-            assert!(vec3::norm(vec3::sub(cam.orbit[i], start[i])) < 1e-6);
+        for (now, then) in cam.orbit.iter().zip(&start) {
+            assert!(vec3::norm(vec3::sub(*now, *then)) < 1e-6);
         }
         for _ in 0..steps {
             cam.orbit(std::f64::consts::TAU / steps as f64, 0.0);
