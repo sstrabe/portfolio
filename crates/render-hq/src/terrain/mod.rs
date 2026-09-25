@@ -6,6 +6,7 @@
 //! that could drift from what is drawn.
 
 pub mod anchor;
+pub mod atlas;
 pub mod cube;
 pub mod maps;
 pub mod probe;
