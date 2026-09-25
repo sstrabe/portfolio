@@ -34,6 +34,8 @@ pub enum Action {
     TogglePalette,
     /// Change the exposure compensation by this many stops (0: reset).
     Exposure(f64),
+    /// First person / chase camera.
+    ToggleChase,
 }
 
 #[derive(Default)]
@@ -68,6 +70,7 @@ impl Controls {
             KeyCode::KeyO => Some(Action::OrbitAutopilot),
             KeyCode::Tab => Some(Action::NextTarget),
             KeyCode::KeyP => Some(Action::NextOptics),
+            KeyCode::KeyV => Some(Action::ToggleChase),
             KeyCode::KeyH => Some(Action::TogglePalette),
             KeyCode::PageUp => Some(Action::Exposure(1.0)),
             KeyCode::PageDown => Some(Action::Exposure(-1.0)),

@@ -58,6 +58,7 @@ impl State {
         let mut session = Session::new(world, gpu);
         session.fov_deg = o.fov;
         session.gpu.post.settings = o.optics;
+        session.gpu.ship.camera.chase = o.chase;
         let scale = o.scale.unwrap_or(1.0);
         session.gpu.set_render_scale(scale);
         let now = Instant::now();
@@ -283,6 +284,12 @@ impl ApplicationHandler for App {
                         let o = &mut s.session.gpu.post.settings;
                         o.ev = if stops == 0.0 { 0.0 } else { o.ev + stops };
                         let note = format!("exposure {:+.0} EV", o.ev);
+                        s.notify(note);
+                    }
+                    Some(Action::ToggleChase) => {
+                        let cam = &mut s.session.gpu.ship.camera;
+                        cam.chase = !cam.chase;
+                        let note = if cam.chase { "chase camera" } else { "first person" };
                         s.notify(note);
                     }
                     Some(Action::InvertY(on)) => s.notify(if on { "mouse Y inverted" } else { "mouse Y normal" }),

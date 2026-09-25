@@ -53,6 +53,9 @@ pub struct FrameContext<'a> {
     pub hq: &'a HqUniforms,
     pub frame_index: u32,
     pub wall_time: f64,
+    /// The view's tetrad: the pilot's, turned onto the camera's axes in the
+    /// chase view.
+    pub view: &'a kerr::pilot::Tetrad,
 }
 
 #[cfg(test)]

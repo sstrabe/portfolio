@@ -61,12 +61,20 @@ impl Session {
             panel_slots: 0,
             highlight: -1,
         };
-        let built = frame::build(&self.world, &params);
+        let mut built = frame::build(&self.world, &params);
+        // The chase camera turns the view (its offset of tens of metres
+        // matters only for the ship itself, see `ship/camera.rs`).
+        let view = self.gpu.ship.camera.view_tetrad(&self.world.pilot.e);
+        let e = |v: [f64; 4]| v.map(|x| x as f32);
+        (built.uniforms.e1, built.uniforms.e2, built.uniforms.e3) = (e(view[1]), e(view[2]), e(view[3]));
+        // Drive glow follows the commanded thrust.
+        let thrust = input.thrust.iter().map(|x| x * x).sum::<f64>().sqrt().min(1.0);
+        self.gpu.ship.power = thrust * if input.boost { 1.0 } else { 0.4 };
         self.gpu.write_frame(&built.uniforms);
         self.gpu.write_meta(&built.meta);
         self.gpu.write_spheres(&built.spheres);
         let pixel_angle = built.uniforms.cam[2] as f64;
-        self.gpu.update_near(&self.world, pixel_angle);
+        self.gpu.update_near(&self.world, &view, pixel_angle);
 
         let sigma = PSF_SIGMA.max(0.6 * pixel_angle);
         let jitter = self.gpu.post.jitter();
@@ -84,7 +92,7 @@ impl Session {
             units: [KM_PER_M as f32, SECONDS_PER_M as f32, C_KM_S as f32, 0.0],
             rgb: spectrum::rgb_weight_rows(),
         };
-        self.gpu.render(&self.world, hq, self.wall_time);
+        self.gpu.render(&self.world, &view, hq, self.wall_time);
     }
 
     /// What happened during the last frame.

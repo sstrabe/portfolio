@@ -584,12 +584,13 @@ impl Post {
         // g(e'_a, e_b): previous tetrad against the current one.
         let pilot = &ctx.world.pilot;
         let pos = pilot.position();
-        let prev = self.prev_tetrad.unwrap_or(pilot.e);
+        let view = *ctx.view;
+        let prev = self.prev_tetrad.unwrap_or(view);
         let mut m = [[0.0f32; 4]; 4];
         let mut dev = 0.0f64;
         for (a, row) in m.iter_mut().enumerate() {
             for (b, v) in row.iter_mut().enumerate() {
-                let g = ctx.world.kerr.dot(pos, prev[a], pilot.e[b]);
+                let g = ctx.world.kerr.dot(pos, prev[a], view[b]);
                 // Identical frames give the Minkowski metric diag(−1, 1, 1, 1).
                 let eta = match (a == b, a) {
                     (false, _) => 0.0,
@@ -600,7 +601,7 @@ impl Post {
                 *v = g as f32;
             }
         }
-        self.prev_tetrad = Some(pilot.e);
+        self.prev_tetrad = Some(view);
         self.still_frames = if dev < 2e-6 { self.still_frames + 1 } else { 0 };
         let cap = if self.still_frames > 2 {
             (HISTORY_MOVING + self.still_frames as f32).min(HISTORY_STILL)

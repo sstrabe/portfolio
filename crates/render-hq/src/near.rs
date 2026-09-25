@@ -83,11 +83,11 @@ pub struct Selection {
 
 /// Pick the systems near the pilot and express them in their rest frames.
 /// `pixel_angle` (rad) decides whether a star's disc is drawn here.
-pub fn select(world: &World, pixel_angle: f64) -> Selection {
+/// `e` is the view's tetrad (the pilot's, or turned to a chase camera).
+pub fn select(world: &World, e: &kerr::pilot::Tetrad, pixel_angle: f64) -> Selection {
     let k = &world.kerr;
     let pilot = &world.pilot;
     let pos = pilot.position();
-    let e = &pilot.e;
     let t = world.cluster.t;
     let seed = world.cluster.cfg.seed;
     let mut sel = Selection::default();
@@ -239,8 +239,8 @@ impl NearField {
         &self.bind_group
     }
 
-    pub fn update(&mut self, queue: &wgpu::Queue, world: &World, pixel_angle: f64) {
-        self.selection = select(world, pixel_angle);
+    pub fn update(&mut self, queue: &wgpu::Queue, world: &World, e: &kerr::pilot::Tetrad, pixel_angle: f64) {
+        self.selection = select(world, e, pixel_angle);
         let systems: Vec<SystemGpu> = self.selection.systems.iter().map(|s| s.gpu).collect();
         let planets: Vec<PlanetGpu> = self.selection.planets.iter().map(|p| p.gpu).collect();
         if !systems.is_empty() {
@@ -293,7 +293,7 @@ mod tests {
         let mut pilot = kerr::pilot::Pilot::new(&w.kerr, at, vel, look, vec3::any_orthogonal(look)).unwrap();
         pilot.x[0] = w.pilot.x[0];
         w.pilot = pilot;
-        let sel = select(&w, 1e-3);
+        let sel = select(&w, &w.pilot.e, 1e-3);
         let p = sel.planets.iter().find(|p| p.gpu.ids[2] == 0 && p.index == 0).expect("planet 0 selected");
         let c = p.gpu.centre;
         // Straight ahead (forward axis), 3 radii away.

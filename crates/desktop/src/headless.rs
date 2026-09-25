@@ -19,6 +19,7 @@ pub fn run(o: &Options) -> Result<(), String> {
     let mut s = Session::new(world, gpu);
     s.fov_deg = o.fov;
     s.gpu.post.settings = o.optics;
+    s.gpu.ship.camera.chase = o.chase;
     s.gpu.set_render_scale(o.scale.unwrap_or(1.0));
 
     let mut controls = Controls::default();

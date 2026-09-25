@@ -29,6 +29,8 @@ pub struct Options {
     pub burn: bool,
     /// Headless: engage the orbit autopilot on the nearest planet.
     pub autopilot: bool,
+    /// Start with the chase camera (the ship in view).
+    pub chase: bool,
     pub start: start::Start,
     pub optics: render_hq::post::Settings,
 }
@@ -62,6 +64,7 @@ OPTIONS:
     --near-star K       Headless: start K stellar radii from the nearest star
     --burn              Headless: thrust forward with boost during the flight
     --autopilot         Headless: fly into orbit around the nearest planet
+    --chase             Start with the chase camera (the ship in view)
     -h, --help          Show this help
 
 CONTROLS:
@@ -77,7 +80,7 @@ CONTROLS:
     Tab target the next planet of the system,
     , / . halve / double the time warp (near a body it is capped so an
     orbit takes at least 5 s), F11 fullscreen, Ctrl+Q quit.
-    P cycles eye, camera and astrograph; H toggles the Hubble palette;
+    V chase camera / first person; P cycles eye, camera and astrograph; H toggles the Hubble palette;
     PageDown / PageUp exposure down / up a stop; Backspace resets it.
     Telemetry is shown in the window title.
 
@@ -107,6 +110,7 @@ fn parse() -> Result<Options, String> {
         near_star: None,
         burn: false,
         autopilot: false,
+        chase: false,
         start: start::Start::Cluster,
         optics: Default::default(),
     };
@@ -133,6 +137,7 @@ fn parse() -> Result<Options, String> {
             }
             "--burn" => o.burn = true,
             "--autopilot" => o.autopilot = true,
+            "--chase" => o.chase = true,
             "--start" => o.start = value("--start")?.parse()?,
             "--look" => o.start = start::Start::look(&value("--look")?)?,
             "--optics" => {

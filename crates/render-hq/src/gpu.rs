@@ -435,13 +435,13 @@ impl Gpu {
     }
 
     /// Pick the near field for this frame (before building `HqUniforms`).
-    pub fn update_near(&mut self, world: &World, pixel_angle: f64) {
-        self.near.update(&self.queue, world, pixel_angle);
+    pub fn update_near(&mut self, world: &World, view: &kerr::pilot::Tetrad, pixel_angle: f64) {
+        self.near.update(&self.queue, world, view, pixel_angle);
     }
 
     /// Update every feature and render a frame. `hq` is completed here with
     /// the target size, frame index and near-field counts.
-    pub fn render(&mut self, world: &World, mut hq: HqUniforms, wall_time: f64) {
+    pub fn render(&mut self, world: &World, view: &kerr::pilot::Tetrad, mut hq: HqUniforms, wall_time: f64) {
         self.ensure_hdr();
         let (w, h) = self.hdr_size();
         let [systems, planets] = self.near.counts();
@@ -457,6 +457,7 @@ impl Gpu {
             hq: &hq,
             frame_index: self.frame_index,
             wall_time,
+            view,
         };
         self.atmo.update(&ctx);
         self.nebula.update(&ctx);
