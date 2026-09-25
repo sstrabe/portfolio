@@ -41,6 +41,7 @@ pub fn trace(rt: bool) -> String {
             "trace.wgsl"
         ),
         if rt { wgsl!("ship_rq.wgsl") } else { wgsl!("ship_bvh.wgsl") },
+        if rt { wgsl!("terrain_rq.wgsl") } else { wgsl!("terrain_none.wgsl") },
     ]);
     // An `enable` directive has to come before any declaration.
     if rt { format!("enable wgpu_ray_query;\n{body}") } else { body }

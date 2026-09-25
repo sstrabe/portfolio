@@ -22,6 +22,7 @@ use kerr::planets::{self, C_KM_S, KM_PER_M, System};
 use kerr::units::{AU, SECONDS_PER_M};
 use kerr::vec3::{self, V3, V4};
 use kerr::world::World;
+use wgpu::util::DeviceExt;
 
 pub const MAX_SYSTEMS: usize = 2;
 pub const MAX_PLANETS: usize = 16;
@@ -267,6 +268,25 @@ pub struct NearField {
     pub maps: crate::terrain::maps::SurfaceMaps,
     /// Terrain tiles around the pilot on that world.
     pub terrain: crate::terrain::field::TerrainField,
+    /// Where the tiles are relative to the pilot (`terrain_rq.wgsl`).
+    terrain_view: wgpu::Buffer,
+}
+
+/// Mirrors `struct TerrainView` in `terrain_rq.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct TerrainViewGpu {
+    eye: [f32; 4],
+    up: [f32; 4],
+    anchor: [f32; 4],
+    ids: [u32; 4],
+}
+
+impl TerrainViewGpu {
+    /// No planet has tiles in the trace.
+    fn none() -> Self {
+        Self { eye: [0.0; 4], up: [0.0; 4], anchor: [0.0; 4], ids: [u32::MAX, 0, 0, 0] }
+    }
 }
 
 /// Maps are baked for a solid world with air once the pilot is within this
@@ -285,6 +305,35 @@ impl NearField {
                 min_binding_size: None,
             },
             count: None,
+        };
+        let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty,
+            count: None,
+        };
+        let array = |sample_type| wgpu::BindingType::Texture {
+            sample_type,
+            view_dimension: wgpu::TextureViewDimension::D2Array,
+            multisampled: false,
+        };
+        // With ray queries, the terrain tiles (`terrain_rq.wgsl`).
+        let rt_entries: Vec<wgpu::BindGroupLayoutEntry> = if rt {
+            vec![
+                entry(5, array(wgpu::TextureSampleType::Float { filterable: false })),
+                entry(6, array(wgpu::TextureSampleType::Uint)),
+                entry(7, wgpu::BindingType::AccelerationStructure { vertex_return: false }),
+                entry(
+                    8,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+            ]
+        } else {
+            Vec::new()
         };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("near field"),
@@ -307,7 +356,18 @@ impl NearField {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-            ],
+                entry(
+                    4,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+            ]
+            .into_iter()
+            .chain(rt_entries)
+            .collect::<Vec<_>>(),
         });
         let maps = crate::terrain::maps::SurfaceMaps::new(device);
         let buffer = |label, size| {
@@ -320,18 +380,58 @@ impl NearField {
         };
         let systems = buffer("systems", (MAX_SYSTEMS * std::mem::size_of::<SystemGpu>()) as u64);
         let planets = buffer("planets", (MAX_PLANETS * std::mem::size_of::<PlanetGpu>()) as u64);
+        let terrain_view = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("terrain view"),
+            contents: bytemuck::bytes_of(&TerrainViewGpu::none()),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let terrain = crate::terrain::field::TerrainField::new(device, rt);
+        let array_view = |t: &wgpu::Texture| {
+            t.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            })
+        };
+        let (heights, materials) = (array_view(&terrain.tile_gen.height), array_view(&terrain.tile_gen.material));
+        let mut entries = vec![
+            wgpu::BindGroupEntry { binding: 0, resource: systems.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: planets.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&maps.climate_view) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&maps.sampler) },
+            wgpu::BindGroupEntry { binding: 4, resource: terrain_view.as_entire_binding() },
+        ];
+        if let Some(accel) = &terrain.tile_gen.accel {
+            entries.extend([
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&heights) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&materials) },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::AccelerationStructure(&accel.tlas),
+                },
+                wgpu::BindGroupEntry { binding: 8, resource: accel.vertices.as_entire_binding() },
+            ]);
+        }
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("near field"),
             layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: systems.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: planets.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&maps.climate_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&maps.sampler) },
-            ],
+            entries: &entries,
         });
-        let terrain = crate::terrain::field::TerrainField::new(device, rt);
-        Self { layout, bind_group, systems, planets, selection: Selection::default(), maps, terrain }
+        Self { layout, bind_group, systems, planets, terrain_view, selection: Selection::default(), maps, terrain }
+    }
+
+    /// Where the tiles are for the trace, for a pilot at `eye` (body-fixed
+    /// km) on `planet` in GPU slot `slot`: offsets in f64, then f32.
+    fn terrain_view(&self, planet: &planets::Planet, eye: V3, slot: u32) -> TerrainViewGpu {
+        let tiles_in = self.terrain.tile_gen.accel.as_ref().is_some_and(|a| a.instances > 0);
+        let Some(anchor) = self.terrain.anchor_km().filter(|_| tiles_in) else { return TerrainViewGpu::none() };
+        let f = |v: V3, w: f64| [v[0] as f32, v[1] as f32, v[2] as f32, w as f32];
+        let r = vec3::norm(eye);
+        TerrainViewGpu {
+            eye: f(vec3::sub(eye, anchor), r - planet.radius_km),
+            up: f(vec3::scale(eye, 1.0 / r), planet.radius_km),
+            anchor: f(vec3::normalize(anchor), vec3::norm(anchor)),
+            ids: [slot, 0, 0, 0],
+        }
     }
 
     pub fn layout(&self) -> &wgpu::BindGroupLayout {
@@ -374,6 +474,7 @@ impl NearField {
             self.maps.bake(device, queue, key, &planet);
         }
         let baked = self.maps.baked;
+        let mut view = TerrainViewGpu::none();
         // Keep that world's terrain tiles filled around the pilot.
         if let Some(key) = baked
             && let Some(p) = self.selection.planets.iter().find(|p| {
@@ -384,7 +485,9 @@ impl NearField {
             let planet = p.planet(&self.selection).clone();
             let eye = p.pilot_body_km();
             self.terrain.update(device, queue, (key, &planet), eye, pixel_angle, profiler);
+            view = self.terrain_view(&planet, eye, p.gpu.ids[3]);
         }
+        queue.write_buffer(&self.terrain_view, 0, bytemuck::bytes_of(&view));
         let systems: Vec<SystemGpu> = self.selection.systems.iter().map(|s| s.gpu).collect();
         let planets: Vec<PlanetGpu> = self
             .selection

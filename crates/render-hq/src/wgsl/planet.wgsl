@@ -44,6 +44,14 @@ fn planet_height(tp: TerrainParams, q: vec3<f32>, lod: f32) -> vec4<f32> {
 }
 
 fn planet_surface_hit(p: Planet, o: vec3<f32>, dir: vec3<f32>, u_max: f32, fp: f32, scale: f32) -> SurfaceHit {
+    // The planet with terrain tiles: its real relief, traced by hardware
+    // (`terrain_rq.wgsl`), where the tiles or its sea are met.
+    if (terrain_on(p)) {
+        let t = terrain_surface_hit(p, o, dir, u_max, fp, scale);
+        if (t.hit) {
+            return t;
+        }
+    }
     var h: SurfaceHit;
     h.hit = false;
     let span = sphere_span(o, dir, p.centre.w);
