@@ -48,7 +48,19 @@ fn cs_neb_cube(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let face = cube_gen.rows.x;
     let dir = neb_cube_dir(face, (vec2<f32>(f32(gid.x), f32(row)) + 0.5) / f32(size));
-    let acc = neb_march(cube_gen.centre.xyz, dir, 0.0, 3.0e38, 0.5);
+    // Two marches with independent jitter per texel: the cube is static,
+    // so unlike the per-pixel march no TAA averages its sampling pattern,
+    // and one shared offset would draw the voxel grid's planes around the
+    // ship as lines across the sky.
+    let h = hash3(vec3<u32>(gid.x, row, face * 977u + 13u));
+    let m0 = neb_march(cube_gen.centre.xyz, dir, 0.0, 3.0e38, h.x);
+    let m1 = neb_march(cube_gen.centre.xyz, dir, 0.0, 3.0e38, h.y);
+    var acc: NebAcc;
+    acc.la = 0.5 * (m0.la + m1.la);
+    acc.lb = 0.5 * (m0.lb + m1.lb);
+    acc.cont = 0.5 * (m0.cont + m1.cont);
+    acc.mv = 0.5 * (m0.mv + m1.mv);
+    acc.tau = 0.5 * (m0.tau + m1.tau);
     let at = vec2<u32>(gid.x, row);
     textureStore(cube_out_a, at, face, acc.la);
     textureStore(cube_out_b, at, face, vec4<f32>(acc.lb, acc.tau, acc.mv.x));

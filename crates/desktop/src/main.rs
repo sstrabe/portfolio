@@ -25,6 +25,9 @@ pub struct Options {
     pub out: String,
     /// Headless: start this many stellar radii from the nearest star.
     pub near_star: Option<f64>,
+    /// Headless: start this many Schwarzschild radii from the nearest
+    /// stellar-mass black hole.
+    pub near_hole: Option<f64>,
     /// Headless: thrust forward (with boost) for the whole flight.
     pub burn: bool,
     /// Headless: engage the orbit autopilot on the nearest planet.
@@ -62,6 +65,9 @@ OPTIONS:
     --seconds S         Headless: seconds of flight before the shot (default 2)
     --out FILE          Headless: output path (default kerr-nucleus.png)
     --near-star K       Headless: start K stellar radii from the nearest star
+    --near-hole K       Headless: start K Schwarzschild radii from the nearest
+                        stellar-mass black hole, facing it (50: an Einstein ring
+                        about 20° across around a 5° shadow)
     --burn              Headless: thrust forward with boost during the flight
     --autopilot         Headless: fly into orbit around the nearest planet
     --chase             Start with the chase camera (the ship in view)
@@ -108,6 +114,7 @@ fn parse() -> Result<Options, String> {
         seconds: 2.0,
         out: "kerr-nucleus.png".into(),
         near_star: None,
+        near_hole: None,
         burn: false,
         autopilot: false,
         chase: false,
@@ -134,6 +141,9 @@ fn parse() -> Result<Options, String> {
             "--out" => o.out = value("--out")?,
             "--near-star" => {
                 o.near_star = Some(value("--near-star")?.parse().map_err(|e| format!("--near-star: {e}"))?)
+            }
+            "--near-hole" => {
+                o.near_hole = Some(value("--near-hole")?.parse().map_err(|e| format!("--near-hole: {e}"))?)
             }
             "--burn" => o.burn = true,
             "--autopilot" => o.autopilot = true,

@@ -283,7 +283,7 @@ impl Nebulae {
             visibility: wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                view_dimension: wgpu::TextureViewDimension::Cube,
+                view_dimension: wgpu::TextureViewDimension::D2Array,
                 multisampled: false,
             },
             count: None,
@@ -552,7 +552,7 @@ impl Nebulae {
             t.create_view(&wgpu::TextureViewDescriptor { dimension: Some(d), ..Default::default() })
         };
         let cube_views: Vec<wgpu::TextureView> =
-            cube_tex.iter().map(|t| cube_view(t, wgpu::TextureViewDimension::Cube)).collect();
+            cube_tex.iter().map(|t| cube_view(t, wgpu::TextureViewDimension::D2Array)).collect();
         let state = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nebula cube state"),
             size: 16,

@@ -108,6 +108,10 @@ fn far_trace(n: vec3<f32>) -> FarTrace {
         let k1 = phase_rhs(s);
         let h = ray_step(s, k1, r);
         let nxt = lens_kick(s, rk4(s, k1, h));
+        if (lens_captured) {
+            out.kind = FAR_HORIZON;
+            break;
+        }
         out.m = medium_over(out.m, nebula_segment(pos, abs_pos(nxt.x), 1.0 / max(nxt.p.x, 1e-6)));
         if (frame.extra.z > 0.0) {
             let sh = sphere_hit(s.x, nxt.x, nxt.p);

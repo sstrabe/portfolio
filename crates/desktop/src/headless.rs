@@ -10,6 +10,9 @@ pub fn run(o: &Options) -> Result<(), String> {
     if let Some(k) = o.near_star {
         park_near_star(&mut world, k)?;
     }
+    if let Some(k) = o.near_hole {
+        park_near_hole(&mut world, k)?;
+    }
     if o.autopilot {
         let p = world.toggle_orbit_autopilot().ok_or("no planet for the autopilot")?;
         println!("autopilot: into orbit around {}", crate::hud::planet_name(&world, p));
@@ -70,6 +73,38 @@ pub fn run(o: &Options) -> Result<(), String> {
         m.p95,
         m.fifth_star
     );
+    Ok(())
+}
+
+/// Put the ship `k` Schwarzschild radii from the nearest stellar-mass
+/// black hole, co-moving with it and facing it along the galactic plane, so
+/// the Milky Way's band is lensed into its Einstein ring.
+fn park_near_hole(world: &mut kerr::world::World, k: f64) -> Result<(), String> {
+    use kerr::cluster::BodyKind;
+    use kerr::vec3;
+    let pos = world.pilot.position();
+    let hole = world
+        .cluster
+        .bodies
+        .iter()
+        .filter(|b| b.alive && b.params.kind == BodyKind::Compact)
+        .min_by(|a, b| vec3::norm(vec3::sub(a.position(), pos)).total_cmp(&vec3::norm(vec3::sub(b.position(), pos))))
+        .ok_or("no black holes")?;
+    let hp = hole.position();
+    let vel = kerr::geodesic::coordinate_velocity(&world.kerr, &hole.state);
+    let m = hole.params.mass;
+    // The galactic plane's axes in `far.wgsl`.
+    let look = vec3::normalize([0.83, 0.0, 0.56]);
+    let up = vec3::normalize([-0.56, 0.12, 0.83]);
+    let at = vec3::axpy(hp, -2.0 * k * m, look);
+    let mut pilot = kerr::pilot::Pilot::new(&world.kerr, at, vel, look, up).ok_or("bad start")?;
+    pilot.x[0] = world.pilot.x[0];
+    println!(
+        "parked {k} Schwarzschild radii ({:.0} km) from a {:.1} M☉ black hole",
+        2.0 * k * m * kerr::planets::KM_PER_M,
+        m / kerr::units::MSUN
+    );
+    world.pilot = pilot;
     Ok(())
 }
 

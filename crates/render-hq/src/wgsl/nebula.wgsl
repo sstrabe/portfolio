@@ -60,10 +60,12 @@ struct NebParams {
 @group(3) @binding(11) var neb_vel3: texture_3d<f32>;
 // The march from inside the cluster, cached per direction (`nebula_cube.wgsl`):
 // A Hβ, [O III], [O I], Hα; B [N II], [S II], τ_V, Σw; C continuum; D Σwv, Σw(v² + σ²).
-@group(3) @binding(12) var neb_cube_a: texture_cube<f32>;
-@group(3) @binding(13) var neb_cube_b: texture_cube<f32>;
-@group(3) @binding(14) var neb_cube_c: texture_cube<f32>;
-@group(3) @binding(15) var neb_cube_d: texture_cube<f32>;
+// Faces are layers of 2D arrays, addressed by `neb_cube_face` (the inverse
+// of the generator's `neb_cube_dir`), so lookup and generation agree.
+@group(3) @binding(12) var neb_cube_a: texture_2d_array<f32>;
+@group(3) @binding(13) var neb_cube_b: texture_2d_array<f32>;
+@group(3) @binding(14) var neb_cube_c: texture_2d_array<f32>;
+@group(3) @binding(15) var neb_cube_d: texture_2d_array<f32>;
 // Cube centre (M, relative to the hole); w: 1 while the cube can be used.
 @group(3) @binding(16) var<uniform> neb_cube: vec4<f32>;
 
@@ -405,6 +407,24 @@ fn nebula_segment(a: vec3<f32>, b: vec3<f32>, g: f32) -> Medium {
     return neb_assemble(neb_march(a, rd, 0.0, len, neb_pixel_jitter(rd)), g);
 }
 
+// Cube face and texture coordinates of direction d: (u, v, face).
+fn neb_cube_face(d: vec3<f32>) -> vec3<f32> {
+    let a = abs(d);
+    var st: vec2<f32>;
+    var face: f32;
+    if (a.x >= a.y && a.x >= a.z) {
+        face = select(1.0, 0.0, d.x > 0.0);
+        st = select(vec2<f32>(d.z, -d.y), vec2<f32>(-d.z, -d.y), d.x > 0.0) / a.x;
+    } else if (a.y >= a.z) {
+        face = select(3.0, 2.0, d.y > 0.0);
+        st = select(vec2<f32>(d.x, -d.z), vec2<f32>(d.x, d.z), d.y > 0.0) / a.y;
+    } else {
+        face = select(5.0, 4.0, d.z > 0.0);
+        st = select(vec2<f32>(-d.x, -d.y), vec2<f32>(d.x, -d.y), d.z > 0.0) / a.z;
+    }
+    return vec3<f32>(st * 0.5 + 0.5, face);
+}
+
 // From `p` along `dir` out to infinity, after the ray has escaped the hole.
 fn nebula_escape(p: vec3<f32>, dir: vec3<f32>, g: f32) -> Medium {
     if (neb.pulsar.w == 0.0) {
@@ -412,12 +432,14 @@ fn nebula_escape(p: vec3<f32>, dir: vec3<f32>, g: f32) -> Medium {
     }
     if (neb_cube.w > 0.5) {
         var acc: NebAcc;
-        let b = textureSampleLevel(neb_cube_b, neb_clamp, dir, 0.0);
-        let d = textureSampleLevel(neb_cube_d, neb_clamp, dir, 0.0);
-        acc.la = textureSampleLevel(neb_cube_a, neb_clamp, dir, 0.0);
+        let f = neb_cube_face(dir);
+        let face = u32(f.z);
+        let b = textureSampleLevel(neb_cube_b, neb_clamp, f.xy, face, 0.0);
+        let d = textureSampleLevel(neb_cube_d, neb_clamp, f.xy, face, 0.0);
+        acc.la = textureSampleLevel(neb_cube_a, neb_clamp, f.xy, face, 0.0);
         acc.lb = b.xy;
         acc.tau = b.z;
-        acc.cont = textureSampleLevel(neb_cube_c, neb_clamp, dir, 0.0);
+        acc.cont = textureSampleLevel(neb_cube_c, neb_clamp, f.xy, face, 0.0);
         acc.mv = vec3<f32>(b.w, d.xy);
         return neb_assemble(acc, g);
     }

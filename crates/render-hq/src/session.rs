@@ -71,6 +71,7 @@ impl Session {
         let thrust = input.thrust.iter().map(|x| x * x).sum::<f64>().sqrt().min(1.0);
         self.gpu.ship.power = thrust * if input.boost { 1.0 } else { 0.4 };
         self.gpu.write_frame(&built.uniforms);
+        crate::lens::mark_shadows(&self.world, &mut built.meta);
         self.gpu.write_meta(&built.meta);
         self.gpu.write_spheres(&built.spheres);
         let pixel_angle = built.uniforms.cam[2] as f64;
