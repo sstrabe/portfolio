@@ -23,6 +23,7 @@ pub mod session;
 pub mod shaders;
 pub mod ship;
 pub mod spectrum;
+pub mod terrain;
 
 pub use gpu::Gpu;
 pub use session::Session;

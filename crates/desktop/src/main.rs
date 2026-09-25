@@ -64,6 +64,12 @@ OPTIONS:
                                ringed or any (nearest of that kind)
                           ALTITUDE km, or planet radii with an r suffix (2r)
                           VIEW dawn, day (sun glint), limb, nadir, night, disc
+                        ground[:SITE][:LAT[:HOUR[:VIEW[:HEIGHT]]]]: standing on the
+                          Earth-like world at latitude LAT (degrees, default 20) at
+                          local solar time HOUR (default 15), HEIGHT metres above the
+                          ground (default 1.7); SITE here (default), land (the nearest
+                          land) or coast (the nearest shore, facing the sea); VIEW
+                          horizon (the sun on the right, or the sea), sun, down, sky
     --look NEBULA[@PC]  Face a nebula (sgra, minispiral, cnd, sgra-east, pwn) instead;
                         with @PC, from PC parsecs away on Earth's side, at rest
     --optics KIND       eye, camera (default) or astro (a telescope)
@@ -231,12 +237,8 @@ pub fn instance() -> wgpu::Instance {
     wgpu::Instance::new(desc)
 }
 
-/// Sagittarius A* at its real scale: the hole, its stars and you, placed
-/// according to `start`.
-pub fn world(stars: u32, start: start::Start) -> Result<World, String> {
-    let mut world = World::new(kerr::world::WorldConfig::sgr_a(stars as usize, 1));
-    if let Some(place) = start::apply(&mut world, start)? {
-        eprintln!("start: {place}");
-    }
-    Ok(world)
+/// Sagittarius A* at its real scale: the hole, its stars and you (on the
+/// cluster start; see [`start::apply`] for the others).
+pub fn world(stars: u32) -> World {
+    World::new(kerr::world::WorldConfig::sgr_a(stars as usize, 1))
 }

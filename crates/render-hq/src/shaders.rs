@@ -99,8 +99,18 @@ pub fn overlay() -> String {
     wgsl!("overlay.wgsl").to_string()
 }
 
-pub fn all() -> [(&'static str, String); 11] {
+/// Terrain heights at given directions, read back by the CPU. Built on
+/// the Kerr prelude alone, binding its own resources in group 0.
+pub fn probe() -> String {
+    let mut s = String::from(::shaders::COMMON);
+    s.push('\n');
+    s.push_str(wgsl!("terrain.wgsl", "probe.wgsl"));
+    s
+}
+
+pub fn all() -> [(&'static str, String); 12] {
     [
+        ("probe", probe()),
         ("overlay", overlay()),
         ("trace", trace()),
         ("nebula cube", nebula_cube()),

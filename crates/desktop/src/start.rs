@@ -1,12 +1,14 @@
 //! Where a flight begins.
 
 use kerr::geodesic;
-use kerr::local;
+use kerr::local::{self, PlanetRef};
 use kerr::pilot::Pilot;
 use kerr::planets::{self, C_KM_S, KM_PER_M, PlanetKind};
 use kerr::units::{PARSEC, SECONDS_PER_M};
 use kerr::vec3::{self, V3};
 use kerr::world::World;
+use render_hq::Gpu;
+use render_hq::terrain::{self, probe::Probe};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Start {
@@ -19,6 +21,49 @@ pub enum Start {
     /// cluster start, or at rest `distance_pc` from it on the side facing
     /// Earth.
     Look { target: usize, distance_pc: Option<f64> },
+    /// Standing on the Earth-like world.
+    Ground(GroundStart),
+}
+
+/// `ground[:SITE][:LAT[:HOUR[:VIEW[:HEIGHT]]]]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundStart {
+    pub site: Site,
+    pub latitude_deg: f64,
+    /// Local solar time, hours (12 is noon).
+    pub hour: f64,
+    pub view: GroundView,
+    /// Eye height above the ground (or the sea), m.
+    pub height_m: f64,
+}
+
+impl Default for GroundStart {
+    fn default() -> Self {
+        Self { site: Site::Here, latitude_deg: 20.0, hour: 15.0, view: GroundView::Horizon, height_m: 1.7 }
+    }
+}
+
+/// Where to stand, relative to the spot at the latitude and hour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Site {
+    /// On the spot, land or sea.
+    Here,
+    /// On the nearest land.
+    Land,
+    /// On the nearest coast, a little inland, looking out to sea.
+    Coast,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroundView {
+    /// Level, 5° down, the sun on the right.
+    Horizon,
+    /// Towards the sun's azimuth, level.
+    Sun,
+    /// 45° down, away from the sun (the ground lit from behind you).
+    Down,
+    /// 30° up, away from the sun.
+    Sky,
 }
 
 impl Start {
@@ -86,7 +131,12 @@ impl std::str::FromStr for Start {
         match parts.next() {
             Some("cluster") if parts.clone().next().is_none() => return Ok(Self::Cluster),
             Some("planet") => {}
-            _ => return Err(format!("unknown start {s:?} (cluster or planet[:KIND[:ALTITUDE[:VIEW]]])")),
+            Some("ground") => return parse_ground(s, parts).map(Self::Ground),
+            _ => {
+                return Err(format!(
+                    "unknown start {s:?} (cluster, planet[:KIND[:ALTITUDE[:VIEW]]] or ground[:LAT[:HOUR[:VIEW[:HEIGHT]]]])"
+                ));
+            }
         }
         let mut p = PlanetStart::default();
         let mut altitude_given = false;
@@ -137,13 +187,229 @@ impl std::str::FromStr for Start {
     }
 }
 
-/// Move the pilot to `start`; returns a description of where.
-pub fn apply(world: &mut World, start: Start) -> Result<Option<String>, String> {
+fn parse_ground<'a>(s: &str, parts: impl Iterator<Item = &'a str>) -> Result<GroundStart, String> {
+    let mut g = GroundStart::default();
+    let num = |p: &str, what: &str| p.parse::<f64>().map_err(|e| format!("{what} {p:?} in {s:?}: {e}"));
+    let mut parts = parts.peekable();
+    if let Some(site) = parts.peek().and_then(|p| match *p {
+        "here" => Some(Site::Here),
+        "land" => Some(Site::Land),
+        "coast" => Some(Site::Coast),
+        _ => None,
+    }) {
+        g.site = site;
+        parts.next();
+    }
+    if let Some(p) = parts.next() {
+        g.latitude_deg = num(p, "latitude")?.clamp(-89.0, 89.0);
+    }
+    if let Some(p) = parts.next() {
+        g.hour = num(p, "hour")?.rem_euclid(24.0);
+    }
+    if let Some(p) = parts.next() {
+        g.view = match p {
+            "horizon" => GroundView::Horizon,
+            "sun" => GroundView::Sun,
+            "down" => GroundView::Down,
+            "sky" => GroundView::Sky,
+            _ => return Err(format!("unknown ground view {p:?} (horizon, sun, down, sky)")),
+        };
+    }
+    if let Some(p) = parts.next() {
+        g.height_m = num(p, "height")?.max(0.05);
+    }
+    if parts.next().is_some() {
+        return Err(format!("too many parts in {s:?}"));
+    }
+    Ok(g)
+}
+
+/// Move the pilot to `start`; returns a description of where. Standing on
+/// the ground needs the GPU (the terrain is defined in its shaders).
+pub fn apply(world: &mut World, start: Start, gpu: Option<&Gpu>) -> Result<Option<String>, String> {
     match start {
         Start::Cluster => Ok(None),
         Start::Planet(p) => near_planet(world, p).map(Some),
         Start::Look { target, distance_pc } => look_at(world, target, distance_pc).map(Some),
+        Start::Ground(g) => on_ground(world, g, gpu.ok_or("standing on a planet needs the GPU")?).map(Some),
     }
+}
+
+/// Stand on the Earth-like world (the default of [`PlanetStart`]) at a
+/// latitude and local solar time: land there, `height_m` above the terrain
+/// as the GPU evaluates it (or above the sea), looking as `g.view` says.
+fn on_ground(world: &mut World, g: GroundStart, gpu: &Gpu) -> Result<String, String> {
+    let (sys, i) = find_planet(world, KindFilter::Kind(PlanetKind::Ocean))?;
+    let planet = sys.planets[i].clone();
+    let body = &world.cluster.bodies[sys.star];
+    let pref = PlanetRef { star: sys.star, generation: body.generation, planet: i };
+    // Fly in to a few radii, co-moving, so the physics takes up this system.
+    let (off_km, vel_km_s) = sys.planet_state(i, world.cluster.t);
+    let away = vec3::scale(vec3::normalize(vec3::scale(off_km, -1.0)), 3.0 * planet.radius_km);
+    let at = vec3::add(body.position(), vec3::scale(vec3::add(off_km, away), 1.0 / KM_PER_M));
+    let vel = vec3::add(geodesic::coordinate_velocity(&world.kerr, &body.state), vec3::scale(vel_km_s, 1.0 / C_KM_S));
+    let mut pilot = Pilot::new(&world.kerr, at, vel, away, planet.spin_axis).ok_or("could not place the ship")?;
+    pilot.x[0] = world.pilot.x[0];
+    pilot.tau = world.pilot.tau;
+    world.pilot = pilot;
+    world.teleported();
+    let l = world.system_of(pref).ok_or("the planet's system did not become the local one")?;
+
+    // The site, in the planet's frame: latitude and hour angle from the
+    // subsolar meridian (afternoon is east, where the ground turns to).
+    let rel = l.planet_relative(i, world.pilot.x);
+    let tc = rel.centre[0];
+    let spin = planet.spin_axis;
+    let to_star = vec3::normalize(vec3::scale(off_km, -1.0));
+    let noon = vec3::normalize(vec3::axpy(to_star, -vec3::dot(to_star, spin), spin));
+    let east = vec3::cross(spin, noon);
+    let (lat, h) = (g.latitude_deg.to_radians(), ((g.hour - 12.0) * 15.0).to_radians());
+    let up = vec3::add(
+        vec3::scale(vec3::add(vec3::scale(noon, h.cos()), vec3::scale(east, h.sin())), lat.cos()),
+        vec3::scale(spin, lat.sin()),
+    );
+    let angle = planet.rotation(tc * SECONDS_PER_M);
+    let axes = terrain::body_axes(spin, angle);
+    let probe = Probe::new(&gpu.device);
+    let terrain_at = |dirs: &[V3]| {
+        let q: Vec<V3> = dirs.iter().map(|&d| terrain::to_body(&axes, d)).collect();
+        probe.sample(&gpu.device, &gpu.queue, &planet, &q, 1e-4)
+    };
+    let dry = |s: &terrain::probe::Sample| s.fill != 1 || s.solid_km > 0.002;
+    // For land or a coast, the nearest dry candidate on a 25° cap around
+    // the spot (a Fibonacci spiral, nearest first).
+    let mut sea_side = None;
+    let up = match g.site {
+        Site::Here => up,
+        Site::Land | Site::Coast => {
+            let cands = cap_points(up, 25f64.to_radians(), 20_000);
+            let samples = terrain_at(&cands);
+            let land = samples.iter().position(dry).ok_or("no land within 25° of the spot")?;
+            if g.site == Site::Land {
+                cands[land]
+            } else {
+                // The nearest sea to that land, then the shore between them
+                // by bisection, and 30 m back inland.
+                let l = cands[land];
+                let sea = cands
+                    .iter()
+                    .zip(&samples)
+                    .filter(|(_, s)| !dry(s))
+                    .map(|(c, _)| *c)
+                    .max_by(|a, b| vec3::dot(*a, l).total_cmp(&vec3::dot(*b, l)))
+                    .ok_or("no sea near the land")?;
+                let (mut lo, mut hi) = (0.0, 1.0);
+                for _ in 0..40 {
+                    let mid = 0.5 * (lo + hi);
+                    if dry(&terrain_at(&[slerp(l, sea, mid)])[0]) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                let span = vec3::dot(l, sea).clamp(-1.0, 1.0).acos() * planet.radius_km;
+                let back = (lo - 0.03 / span.max(1e-6)).max(0.0);
+                sea_side = Some(slerp(l, sea, 1.0));
+                slerp(l, sea, back)
+            }
+        }
+    };
+    let ground = terrain_at(&[up]);
+    let ground = ground.first().ok_or("the terrain probe returned nothing")?;
+    let r_km = planet.radius_km + ground.surface_km + g.height_m / 1000.0;
+    let offset = vec3::rotate(vec3::scale(up, r_km / KM_PER_M), spin, -angle);
+
+    // Face the view, then set down (landing keeps the attitude).
+    let horizontal = |d: V3| vec3::normalize(vec3::axpy(d, -vec3::dot(d, up), up));
+    let sun_h = horizontal(to_star);
+    let tilt = |d: V3, deg: f64| {
+        let a = deg.to_radians();
+        vec3::add(vec3::scale(d, a.cos()), vec3::scale(up, a.sin()))
+    };
+    let away_sun = vec3::scale(sun_h, -1.0);
+    let look = match (sea_side, g.view) {
+        (Some(sea), GroundView::Horizon) => tilt(horizontal(vec3::sub(sea, up)), -5.0),
+        (_, GroundView::Horizon) => tilt(vec3::cross(up, sun_h), -5.0),
+        (_, GroundView::Sun) => sun_h,
+        (_, GroundView::Down) => tilt(away_sun, -45.0),
+        (_, GroundView::Sky) => tilt(away_sun, 30.0),
+    };
+    let coord = |v: V3| vec3::spatial(rel.frame.displacement(0.0, v));
+    let here = world.pilot.position();
+    let mut pilot = Pilot::new(&world.kerr, here, vel, coord(look), coord(up)).ok_or("could not turn the ship")?;
+    pilot.x = world.pilot.x;
+    pilot.tau = world.pilot.tau;
+    world.pilot = pilot;
+    if !world.land(pref, offset) {
+        return Err("could not land".into());
+    }
+    world.cfg.time_scale = 1.0 / SECONDS_PER_M;
+    let sun_elevation = vec3::dot(to_star, up).asin().to_degrees();
+    let what = match (ground.fill, ground.solid_km < 0.0) {
+        (1, true) => format!("on the sea ({:.0} m deep)", -ground.solid_km * 1000.0),
+        _ => format!("on land {:.0} m above sea level", ground.surface_km * 1000.0),
+    };
+    let what = if g.site == Site::Coast { format!("{what}, 30 m from the shore, facing the sea") } else { what };
+    Ok(format!(
+        "standing {what} on a {:?} world of {:.0} km radius, latitude {:.1}°, {:.1} h local time, sun {sun_elevation:.0}° up ({:?} view)",
+        planet.kind, planet.radius_km, g.latitude_deg, g.hour, g.view
+    ))
+}
+
+/// `n` unit directions spread evenly over a cap of angular radius `radius`
+/// around `centre`, nearest the centre first (a Fibonacci spiral).
+fn cap_points(centre: V3, radius: f64, n: usize) -> Vec<V3> {
+    let a = vec3::any_orthogonal(centre);
+    let b = vec3::cross(centre, a);
+    let golden = std::f64::consts::PI * (3.0 - 5f64.sqrt());
+    (0..n)
+        .map(|k| {
+            // Equal-area steps in 1 − cos θ.
+            let theta = (1.0 - (1.0 - radius.cos()) * (k as f64 + 0.5) / n as f64).acos();
+            let phi = golden * k as f64;
+            let side = vec3::add(vec3::scale(a, phi.cos()), vec3::scale(b, phi.sin()));
+            vec3::add(vec3::scale(centre, theta.cos()), vec3::scale(side, theta.sin()))
+        })
+        .collect()
+}
+
+/// Great-circle interpolation between unit vectors.
+fn slerp(a: V3, b: V3, t: f64) -> V3 {
+    let omega = vec3::dot(a, b).clamp(-1.0, 1.0).acos();
+    if omega < 1e-12 {
+        return a;
+    }
+    let s = omega.sin();
+    vec3::add(vec3::scale(a, ((1.0 - t) * omega).sin() / s), vec3::scale(b, (t * omega).sin() / s))
+}
+
+/// The nearest planet matching `kind` (for oceans, the Earth analogue: a
+/// temperate ocean world around a Sun-like star, or failing that the
+/// nearest planet with an atmosphere).
+fn find_planet(world: &World, kind: KindFilter) -> Result<(planets::System, usize), String> {
+    let seed = world.cluster.cfg.seed;
+    let systems = planets::nearby(seed, &world.cluster.bodies, world.pilot.position(), f64::INFINITY);
+    let find = |pred: &dyn Fn(&planets::Planet) -> bool| {
+        systems.iter().find_map(|(_, s)| s.planets.iter().position(pred).map(|i| (s, i)))
+    };
+    let found = match kind {
+        KindFilter::Kind(PlanetKind::Ocean) => systems
+            .iter()
+            .filter(|(_, s)| (5000.0..6500.0).contains(&s.star_temperature))
+            .find_map(|(_, s)| {
+                s.planets
+                    .iter()
+                    .position(|p| p.kind == PlanetKind::Ocean && (245.0..275.0).contains(&p.equilibrium_temperature))
+                    .map(|i| (s, i))
+            })
+            .or_else(|| find(&|p| p.kind == PlanetKind::Ocean && (245.0..275.0).contains(&p.equilibrium_temperature)))
+            .or_else(|| find(&|p| p.kind == PlanetKind::Ocean))
+            .or_else(|| find(&|p| p.atmosphere.is_some() && !p.kind.is_giant())),
+        KindFilter::Kind(k) => find(&|p| p.kind == k),
+        KindFilter::Ringed => find(&|p| p.rings.is_some()),
+        KindFilter::Any => find(&|_| true),
+    };
+    found.map(|(s, i)| (s.clone(), i)).ok_or(format!("no such planet ({kind:?}) in this cluster"))
 }
 
 /// Turn to face a nebula, first moving `distance_pc` from it towards Earth
@@ -173,31 +439,7 @@ fn look_at(world: &mut World, target: usize, distance_pc: Option<f64>) -> Result
 /// horizontal part of the view direction (prograde when looking straight
 /// down), so views of the horizon keep flying towards what they show.
 fn near_planet(world: &mut World, start: PlanetStart) -> Result<String, String> {
-    let seed = world.cluster.cfg.seed;
-    let systems = planets::nearby(seed, &world.cluster.bodies, world.pilot.position(), f64::INFINITY);
-    let find = |pred: &dyn Fn(&planets::Planet) -> bool| {
-        systems.iter().find_map(|(_, s)| s.planets.iter().position(pred).map(|i| (s, i)))
-    };
-    let found = match start.kind {
-        // Prefer the Earth analogue: a temperate ocean world (equilibrium
-        // temperature near Earth's 255 K) around a Sun-like star.
-        KindFilter::Kind(PlanetKind::Ocean) => systems
-            .iter()
-            .filter(|(_, s)| (5000.0..6500.0).contains(&s.star_temperature))
-            .find_map(|(_, s)| {
-                s.planets
-                    .iter()
-                    .position(|p| p.kind == PlanetKind::Ocean && (245.0..275.0).contains(&p.equilibrium_temperature))
-                    .map(|i| (s, i))
-            })
-            .or_else(|| find(&|p| p.kind == PlanetKind::Ocean && (245.0..275.0).contains(&p.equilibrium_temperature)))
-            .or_else(|| find(&|p| p.kind == PlanetKind::Ocean))
-            .or_else(|| find(&|p| p.atmosphere.is_some() && !p.kind.is_giant())),
-        KindFilter::Kind(k) => find(&|p| p.kind == k),
-        KindFilter::Ringed => find(&|p| p.rings.is_some()),
-        KindFilter::Any => find(&|_| true),
-    };
-    let (sys, i) = found.ok_or(format!("no such planet ({:?}) in this cluster", start.kind))?;
+    let (sys, i) = find_planet(world, start.kind)?;
     let planet = &sys.planets[i];
     let body = &world.cluster.bodies[sys.star];
     let (off_km, vel_km_s) = sys.planet_state(i, world.cluster.t);
@@ -321,6 +563,12 @@ mod tests {
         assert_eq!(p.view, View::Day);
         assert!("planet:moon".parse::<Start>().is_err());
         assert!("planet:ice:3r:disc:x".parse::<Start>().is_err());
+        assert_eq!("ground".parse::<Start>(), Ok(Start::Ground(GroundStart::default())));
+        let Ok(Start::Ground(g)) = "ground:-33:7.5:down:40".parse::<Start>() else { panic!() };
+        assert_eq!((g.latitude_deg, g.hour, g.view, g.height_m), (-33.0, 7.5, GroundView::Down, 40.0));
+        let Ok(Start::Ground(g)) = "ground:coast:10".parse::<Start>() else { panic!() };
+        assert_eq!((g.site, g.latitude_deg, g.hour), (Site::Coast, 10.0, 15.0));
+        assert!("ground:10:12:sideways".parse::<Start>().is_err());
     }
 
     /// The glint view looks down at a point on the surface where the sun's

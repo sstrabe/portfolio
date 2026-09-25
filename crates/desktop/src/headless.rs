@@ -9,7 +9,12 @@ use winit::keyboard::KeyCode;
 
 pub fn run(o: &Options) -> Result<(), String> {
     let (w, h) = o.headless.expect("headless size");
-    let mut world = crate::world(o.stars, o.start)?;
+    let mut world = crate::world(o.stars);
+    let (n, cap) = (world.cluster.len() as u32, world.cluster.history.capacity() as u32);
+    let gpu = pollster::block_on(Gpu::new(crate::instance(), None, (w, h), n, cap))?;
+    if let Some(place) = crate::start::apply(&mut world, o.start, Some(&gpu))? {
+        eprintln!("start: {place}");
+    }
     if let Some(k) = o.near_star {
         park_near_star(&mut world, k)?;
     }
@@ -20,8 +25,6 @@ pub fn run(o: &Options) -> Result<(), String> {
         let t = world.toggle_orbit_autopilot().ok_or("the autopilot can't reach the target")?;
         println!("autopilot: into orbit around {}", crate::hud::target_name(&world, t));
     }
-    let (n, cap) = (world.cluster.len() as u32, world.cluster.history.capacity() as u32);
-    let gpu = pollster::block_on(Gpu::new(crate::instance(), None, (w, h), n, cap))?;
     let mut s = Session::new(world, gpu);
     s.fov_deg = o.fov;
     s.gpu.post.settings = o.optics;

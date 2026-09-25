@@ -877,7 +877,8 @@ mod tests {
     /// burn there raises the apoapsis and leaves the periapsis where it was.
     #[test]
     fn prograde_burn_raises_the_orbit() {
-        let mut world = crate::world(384, "planet".parse().unwrap()).unwrap();
+        let mut world = crate::world(384);
+        crate::start::apply(&mut world, "planet".parse().unwrap(), None).unwrap();
         let mut controls = Controls::default();
         controls.key(KeyCode::Digit2, true);
         assert_eq!(controls.sas_mode, SasMode::Prograde);

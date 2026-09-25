@@ -15,6 +15,15 @@
 // every planet is determined by its seed alone.
 // ---------------------------------------------------------------------------
 
+// Values of `Planet.ids.x` (and the probe's `kind`), matching `kerr::planets::PlanetKind`.
+const KIND_ROCKY: u32 = 0u;
+const KIND_OCEAN: u32 = 1u;
+const KIND_DESERT: u32 = 2u;
+const KIND_ICE: u32 = 3u;
+const KIND_LAVA: u32 = 4u;
+const KIND_GAS_GIANT: u32 = 5u;
+const KIND_ICE_GIANT: u32 = 6u;
+
 struct TerrainParams {
     kind: u32,
     seed: u32,

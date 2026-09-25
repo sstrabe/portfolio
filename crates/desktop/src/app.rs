@@ -61,9 +61,12 @@ impl State {
         let instance = crate::instance();
         let surface = instance.create_surface(window.clone()).map_err(|e| format!("surface: {e}"))?;
         let size = window.inner_size();
-        let world = crate::world(o.stars, o.start)?;
+        let mut world = crate::world(o.stars);
         let (n, cap) = (world.cluster.len() as u32, world.cluster.history.capacity() as u32);
         let gpu = pollster::block_on(Gpu::new(instance, Some(surface), (size.width, size.height), n, cap))?;
+        if let Some(place) = crate::start::apply(&mut world, o.start, Some(&gpu))? {
+            eprintln!("start: {place}");
+        }
         let mut session = Session::new(world, gpu);
         session.fov_deg = o.fov;
         session.gpu.post.settings = o.optics;
