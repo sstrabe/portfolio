@@ -106,7 +106,8 @@ content.
 
 - **The hole:** 4.3 million solar masses. One `M` of time is 21 s, and 1 AU is
   23.6 M.
-- **The stars:** 1,500 real stars, from about 100 AU out to 20,000 AU. They
+- **The stars:** 384 real stars by default (`--stars N` for more), from about
+  100 AU out to 20,000 AU. They
   have Salpeter masses, main-sequence and red-giant radii, luminosities and
   temperatures, plus stellar-mass black holes. Close stars are ray traced as
   limb-darkened discs with granulation; distant ones are points.

@@ -45,7 +45,7 @@ USAGE:
     kerr-nucleus [OPTIONS]
 
 OPTIONS:
-    --stars N           Cluster size (default 1500)
+    --stars N           Cluster size (default 384)
     --fov DEG           Vertical field of view (default 75)
     --scale S           Fixed ray-tracing resolution scale 0.2–1 (default: adaptive)
     --start WHERE       cluster (default): orbiting 800 AU from the hole;
