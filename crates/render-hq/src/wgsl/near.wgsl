@@ -162,6 +162,7 @@ fn planet_trace(sys: StarSystem, p: Planet, d: vec3<f32>, sigma_max: f32, fp: f3
     // Terrain shadows: a ray towards the sun through the tiles.
     if (surf.hit && surf.tiled) {
         surf.shadow = terrain_shadow(p, surf, sun);
+        surf.sky_occlusion = terrain_sky_occlusion(p, surf);
     }
     let u_end = select(u_max, surf.u, surf.hit);
     let atmo = atmo_segment(p, o, dir, u_end, surf.hit, sun, fp);

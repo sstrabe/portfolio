@@ -186,7 +186,28 @@ fn terrain_shadow(p: Planet, h: SurfaceHit, sun: SunLight) -> f32 {
     // Off the surface by a little, more for distant hits (f32 positions).
     let o = h.local + up * (1e-5 + 1e-4 * h.u);
     var rq: ray_query;
-    rayQueryInitialize(&rq, terrain_tlas, RayDesc(RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_TERMINATE_ON_FIRST_HIT, 0xffu, 0.0, 500.0, o, d));
+    rayQueryInitialize(&rq, terrain_tlas, RayDesc(RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_TERMINATE_ON_FIRST_HIT, 0xffu, 0.0, 100.0, o, d));
+    rayQueryProceed(&rq);
+    let hit = rayQueryGetCommittedIntersection(&rq);
+    return select(0.0, 1.0, hit.kind != RAY_QUERY_INTERSECTION_NONE);
+}
+
+// The share of the sky the terrain hides from a tile hit: one
+// cosine-weighted ray over the shading normal per frame and pixel (TAA
+// averages them), out to 1 km (the enclosure close by matters most).
+fn terrain_sky_occlusion(p: Planet, h: SurfaceHit) -> f32 {
+    let n = normalize(planet_body(p, h.normal, h.time));
+    let seed = tn_hash(bitcast<u32>(h.local.z) ^ tn_hash(bitcast<u32>(h.local.x) ^ tn_hash(bitcast<u32>(h.local.y) ^ (hq.size.z * 747796405u))));
+    let r1 = f32(seed & 0xffffu) / 65535.0;
+    let r2 = f32(seed >> 16u) / 65535.0;
+    let t1 = normalize(cross(n, select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(n.z) > 0.9)));
+    let t2 = cross(n, t1);
+    let rr = sqrt(r1);
+    let phi = 6.2831853 * r2;
+    let d = normalize(rr * cos(phi) * t1 + rr * sin(phi) * t2 + sqrt(max(1.0 - r1, 0.0)) * n);
+    let o = h.local + h.body * (1e-5 + 1e-4 * h.u);
+    var rq: ray_query;
+    rayQueryInitialize(&rq, terrain_tlas, RayDesc(RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_TERMINATE_ON_FIRST_HIT, 0xffu, 0.0, 1.0, o, d));
     rayQueryProceed(&rq);
     let hit = rayQueryGetCommittedIntersection(&rq);
     return select(0.0, 1.0, hit.kind != RAY_QUERY_INTERSECTION_NONE);

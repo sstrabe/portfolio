@@ -33,6 +33,8 @@ struct SurfaceHit {
     tiled: bool,
     local: vec3<f32>,
     shadow: f32,
+    // The share of the sky the terrain hides (0 open; zero by default).
+    sky_occlusion: f32,
 }
 
 fn planet_terrain(p: Planet) -> TerrainParams {
@@ -446,7 +448,7 @@ fn planet_surface_radiance(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLi
     let up = normalize(h.pos);
     let t_sun = spec_scale(atmo_sun_transmittance(p, h.pos, sun), ring_shadow(p, h.pos, sun) * (1.0 - h.shadow));
     let e_sun = spec_mul(sun.irradiance, t_sun);
-    let e_sky = atmo_sky_irradiance(p, h.pos, h.normal, sun);
+    let e_sky = spec_scale(atmo_sky_irradiance(p, h.pos, h.normal, sun), 1.0 - h.sky_occlusion);
     if (planet_is_giant(p)) {
         let a = giant_albedo(p, h.body, h.lod / p.centre.w);
         // Minnaert-darkened limb of a deep, forward-scattering cloud deck.
