@@ -154,6 +154,12 @@ fn refl_soil(dryness: f32) -> Spectrum {
     return spec_mix(loam, sand, dryness);
 }
 
+// Beach sand: quartz and coral grains, pale gold (a little iron on the
+// quartz takes some blue).
+fn refl_beach_sand() -> Spectrum {
+    return spec_axpy(spec_ramp(420.0, 620.0), 0.16, spec(0.38));
+}
+
 fn refl_snow() -> Spectrum {
     return spec_axpy(spec_ramp(600.0, 800.0), -0.08, spec(0.9));
 }
@@ -188,7 +194,7 @@ fn water_reflectance(depth_m: f32) -> Spectrum {
     let deep = spec_scale(spec_mul(bb, Spectrum(1.0 / (a.a + bb.a), 1.0 / (a.b + bb.b), 1.0 / (a.c + bb.c), 1.0 / (a.d + bb.d))), 0.33);
     let k = spec_scale(spec_add(a, bb), 2.0 * max(depth_m, 0.0));
     let floor_t = spec_transmit(k);
-    return spec_fma(floor_t, spec_sub(refl_ferric(0.4), deep), deep);
+    return spec_fma(floor_t, spec_sub(refl_beach_sand(), deep), deep);
 }
 
 // --- Reflection models ------------------------------------------------------
@@ -262,7 +268,8 @@ fn surface_temperature(tp: TerrainParams, q: vec3<f32>, h: f32) -> f32 {
     return t - 6.5 * max(h, 0.0) * tp.air;
 }
 
-fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, baked: bool) -> Material {
+// `flat`: the cosine of the ground's slope (1 level).
+fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, baked: bool, flat: f32) -> Material {
     var mat: Material;
     mat.emission = spec(0.0);
     // Weather and currents make the ice and snow lines ragged: a few K of
@@ -301,6 +308,11 @@ fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, b
     }
     var a = spec_mix(refl_soil(dryness), rock, max(bare, smoothstep(0.4, 0.9, m.y) * dryness));
     a = spec_mix(a, refl_vegetation(dryness), veg_w);
+    // Beaches: level ground just above the sea in warm climates is sand,
+    // darker where the swash keeps it wet.
+    let beach = smoothstep(0.004, 0.0015, h) * smoothstep(0.9, 0.97, flat) * smoothstep(275.0, 285.0, temp);
+    let wet = smoothstep(0.0008, 0.0002, h);
+    a = spec_mix(a, spec_scale(refl_beach_sand(), 1.0 - 0.45 * wet), beach);
     let snow = smoothstep(271.0, 262.0, temp + 3.0 * (moist - 0.5));
     mat.albedo = spec_mix(a, refl_snow(), snow);
     return mat;
@@ -366,7 +378,10 @@ fn material_rocky(tp: TerrainParams, h: f32, m: vec4<f32>) -> Material {
 
 fn planet_material(tp: TerrainParams, hit: SurfaceHit, baked: bool) -> Material {
     switch (tp.kind) {
-        case KIND_OCEAN: { return material_ocean_world(tp, hit.body, hit.height, hit.terrain, baked); }
+        case KIND_OCEAN: {
+            let flat = dot(hit.normal, normalize(hit.pos));
+            return material_ocean_world(tp, hit.body, hit.height, hit.terrain, baked, flat);
+        }
         case KIND_DESERT: { return material_desert(hit.body, hit.terrain); }
         case KIND_ICE: { return material_ice(hit.terrain); }
         case KIND_LAVA: { return material_lava(tp, hit.height, hit.terrain); }
