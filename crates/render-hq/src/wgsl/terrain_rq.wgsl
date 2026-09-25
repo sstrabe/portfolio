@@ -114,9 +114,11 @@ fn terrain_surface_hit(p: Planet, o: vec3<f32>, dir: vec3<f32>, u_max: f32, fp: 
         return h;
     }
     h.hit = true;
+    h.tiled = true;
     h.u = u;
     h.time = -u / scale;
     h.pos = o + u * dir;
+    h.local = tv.eye.xyz + u * bdir;
     let up = normalize(tv.anchor.xyz * tv.anchor.w + (tv.eye.xyz + u * bdir));
     h.body = up;
     let graze = max(abs(dot(bdir, up)), 0.08);
@@ -161,4 +163,31 @@ fn terrain_surface_hit(p: Planet, o: vec3<f32>, dir: vec3<f32>, u_max: f32, fp: 
     }
     h.normal = normalize(planet_inertial(p, nb, h.time));
     return h;
+}
+
+// How much of the sun the terrain hides from a tile hit: a ray towards a
+// point on the sun's disc, a different one each frame and pixel (TAA
+// averages them into penumbrae), stopping at the first tile it meets.
+fn terrain_shadow(p: Planet, h: SurfaceHit, sun: SunLight) -> f32 {
+    let up = h.body;
+    let s = normalize(planet_body(p, sun.dir, h.time));
+    if (dot(s, up) < -0.2) {
+        return 1.0;
+    }
+    // A point on the disc, uniformly.
+    let seed = tn_hash(bitcast<u32>(h.local.x) ^ tn_hash(bitcast<u32>(h.local.y) ^ tn_hash(bitcast<u32>(h.local.z) ^ hq.size.z)));
+    let r1 = f32(seed & 0xffffu) / 65535.0;
+    let r2 = f32(seed >> 16u) / 65535.0;
+    let t1 = normalize(cross(s, select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(s.z) > 0.9)));
+    let t2 = cross(s, t1);
+    let a = sun.angular_radius * sqrt(r1);
+    let phi = 6.2831853 * r2;
+    let d = normalize(s + a * (cos(phi) * t1 + sin(phi) * t2));
+    // Off the surface by a little, more for distant hits (f32 positions).
+    let o = h.local + up * (1e-5 + 1e-4 * h.u);
+    var rq: ray_query;
+    rayQueryInitialize(&rq, terrain_tlas, RayDesc(RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_TERMINATE_ON_FIRST_HIT, 0xffu, 0.0, 500.0, o, d));
+    rayQueryProceed(&rq);
+    let hit = rayQueryGetCommittedIntersection(&rq);
+    return select(0.0, 1.0, hit.kind != RAY_QUERY_INTERSECTION_NONE);
 }

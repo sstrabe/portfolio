@@ -27,6 +27,12 @@ struct SurfaceHit {
     terrain: vec4<f32>, // macro terrain channels (see `terrain_macro`)
     height: f32,        // solid height above the datum (km)
     lod: f32,           // pixel footprint on the ground (km)
+    // Terrain tiles (`terrain_rq.wgsl`): whether the hit is on them or their
+    // sea, where (km from the anchor, body-fixed), and how much of the sun
+    // the terrain hides from it (0 lit, 1 in shadow; zero by default).
+    tiled: bool,
+    local: vec3<f32>,
+    shadow: f32,
 }
 
 fn planet_terrain(p: Planet) -> TerrainParams {
@@ -438,7 +444,7 @@ fn ring_shadow(p: Planet, x: vec3<f32>, sun: SunLight) -> f32 {
 // Radiance leaving the surface towards `view` (unit, towards the eye).
 fn planet_surface_radiance(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLight) -> Spectrum {
     let up = normalize(h.pos);
-    let t_sun = spec_scale(atmo_sun_transmittance(p, h.pos, sun), ring_shadow(p, h.pos, sun));
+    let t_sun = spec_scale(atmo_sun_transmittance(p, h.pos, sun), ring_shadow(p, h.pos, sun) * (1.0 - h.shadow));
     let e_sun = spec_mul(sun.irradiance, t_sun);
     let e_sky = atmo_sky_irradiance(p, h.pos, h.normal, sun);
     if (planet_is_giant(p)) {
