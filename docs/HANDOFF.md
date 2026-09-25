@@ -114,6 +114,10 @@ cargo test --workspace --release
 - Fast iteration builds: `CARGO_PROFILE_RELEASE_LTO=false
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 cargo build -p desktop --release`
   (a few seconds instead of a minute).
+- `--start ground[:SITE][:LAT[:HOUR[:VIEW[:HEIGHT]]]]`: standing on the
+  Earth-like world at a latitude and local solar time; SITE `land` or
+  `coast` (the shore found with the GPU terrain probe, facing the sea).
+  The baseline for the terrain work, e.g. `--start ground:coast`.
 - `--start planet[:KIND[:ALTITUDE[:VIEW]]]`: KIND ocean, rocky, desert, ice,
   lava, gas, icegiant, ringed, any; ALTITUDE in km or radii (`3r`); VIEW
   dawn, day, limb, nadir, night, disc. The default prefers a temperate ocean
@@ -190,7 +194,16 @@ march). The post chain is ~2 ms.
    point images of other stars (those come from the Sgr A* image finder).
 7. **Ship:** software BVH only (no hardware ray queries yet); the drive's
    plasma glow sits deep in the bell and is rarely visible.
-8. **Atmospheres** use the renderer's 16 visible bins, not the design's
+8. **Ground level today** (baseline shots with `--start ground`): the
+   ground is a smooth sphere (a coast is a flat tan plane, a plateau has
+   painted bumps and a flat horizon); looking towards the sun from the sea
+   the sun is a faint dot in haze and there's no glint; the trace costs
+   36–66 ms. The terrain plan's phases 1–4 address this.
+9. **Precision:** the ship's position is f64 in hole-centred coordinates,
+   ~3 cm at 1000 AU and ~0.6 m at 20,000 AU. A landed ship's place comes
+   from its body-fixed offset instead (`World::surface_fix`); free flight
+   right above the ground will need a planet-relative physics state.
+10. **Atmospheres** use the renderer's 16 visible bins, not the design's
    200–1600 nm range, so a strongly blueshifted flyby loses the UV look.
 
 ---
@@ -213,6 +226,7 @@ yards", and a detailed design followed (`docs/planets.md`). Status:
 | Stellar-mass hole lensing | done |
 | KSP-style controls, HUD with navball, map view (`render-hq/src/overlay.rs` draws both) | done |
 | Targets: planets or Sgr A* (`world::Target`); orbit autopilot to either (hole: 50 M, static-observer frame) | done |
+| **High-fidelity terrain** (plan: walkable cm-level ground, Earth-like worlds with continents and biomes, first showcase a sunny Hawaii-like beach; RT cores first, raster fallback) | Phase 0 done: one planet frame for physics and rendering (`kerr::frame`, `Local::planet_relative`/`planet_point`; landed and drawn altitude agree to 1 cm), the GPU terrain probe (`render_hq::terrain::probe`), ground starts. Next: 0b RT plumbing on the ship, then 1 surface maps (continents, hotspot islands, erosion, climate, biomes). |
 | RCS: 32 nozzles in the mesh, firing from the commanded angular acceleration and translation (`Ship::set_rcs`), plumes traced in `ship.wgsl`; SAS buttons by the navball | done |
 | RT-core terrain and ship, surface maps, 200–1600 nm atmosphere tables, presets (Mars, Venus, Titan, Jupiter, Neptune) | not started |
 
