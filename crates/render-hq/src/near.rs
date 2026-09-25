@@ -348,6 +348,7 @@ impl NearField {
         world: &World,
         e: &kerr::pilot::Tetrad,
         pixel_angle: f64,
+        profiler: Option<&mut crate::profile::Profiler>,
     ) {
         self.selection = select(world, e, pixel_angle);
         // Bake the maps of the nearest solid world with air in range, once.
@@ -381,7 +382,7 @@ impl NearField {
         {
             let planet = p.planet(&self.selection).clone();
             let eye = p.pilot_body_km();
-            self.terrain.update(device, queue, key, &planet, eye, pixel_angle);
+            self.terrain.update(device, queue, key, &planet, eye, pixel_angle, profiler);
         }
         let systems: Vec<SystemGpu> = self.selection.systems.iter().map(|s| s.gpu).collect();
         let planets: Vec<PlanetGpu> = self

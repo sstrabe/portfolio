@@ -832,6 +832,12 @@ impl Post {
         self.profiler.as_mut().and_then(|p| p.compute(label))
     }
 
+    /// The profiler, when timing: for passes submitted outside the frame's
+    /// encoder earlier in the frame (terrain tiles).
+    pub fn profiler(&mut self) -> Option<&mut Profiler> {
+        self.profiler.as_mut()
+    }
+
     /// Mean GPU milliseconds per pass, when `KERR_GPU_TIMING` is set.
     pub fn timings(&self) -> Vec<(&'static str, f64, u32)> {
         self.profiler.as_ref().map(|p| p.report()).unwrap_or_default()

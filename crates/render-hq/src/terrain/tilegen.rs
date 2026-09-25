@@ -268,6 +268,7 @@ impl TileGen {
         planet: &Planet,
         anchor: &Anchor,
         tiles: &[TileId],
+        profiler: Option<&mut crate::profile::Profiler>,
     ) -> Vec<(TileId, u32)> {
         if self.planet != Some(key) {
             self.atlas = Atlas::new(self.atlas.capacity());
@@ -322,10 +323,14 @@ impl TileGen {
             queue.write_buffer(&self.jobs, i as u64 * JOB_STRIDE, bytemuck::bytes_of(job));
             queue.write_buffer(&self.range, job.slots[0] as u64 * 8, bytemuck::cast_slice(&[i32::MAX, i32::MIN]));
         }
+        if jobs.is_empty() {
+            return done;
+        }
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("tile gen") });
         {
-            let mut pass = enc
-                .begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("tile gen"), timestamp_writes: None });
+            let timestamp_writes = profiler.and_then(|p| p.compute("terrain tiles"));
+            let mut pass =
+                enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("tile gen"), timestamp_writes });
             pass.set_pipeline(&self.pipeline);
             let groups = TILE_TEXELS.div_ceil(8);
             // One dispatch per tile, coarse first: each dispatch sees the

@@ -461,7 +461,7 @@ impl Gpu {
 
     /// Pick the near field for this frame (before building `HqUniforms`).
     pub fn update_near(&mut self, world: &World, view: &kerr::pilot::Tetrad, pixel_angle: f64) {
-        self.near.update(&self.device, &self.queue, world, view, pixel_angle);
+        self.near.update(&self.device, &self.queue, world, view, pixel_angle, self.post.profiler());
     }
 
     /// Update every feature and render a frame. `hq` is completed here with

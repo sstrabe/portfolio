@@ -19,11 +19,12 @@ use std::collections::HashSet;
 /// Tiles generated per frame at most.
 pub const TILE_BUDGET: usize = 24;
 
-/// Tiles selected for a view at most.
-pub const MAX_SELECTED: usize = 1200;
+/// Tiles selected for a view at most: well inside the atlas, so the tiles
+/// in view never evict each other.
+pub const MAX_SELECTED: usize = 900;
 
 /// Refine until a tile's samples are at most this many pixels apart.
-pub const MAX_PX: f64 = 2.0;
+pub const MAX_PX: f64 = 3.0;
 
 /// Re-anchor when the eye is this far (km) from the anchor: well within
 /// the ~16,000 cells where the finest octaves stay exact.
@@ -64,6 +65,7 @@ impl TerrainField {
         planet: &Planet,
         eye_km: V3,
         pixel_angle: f64,
+        profiler: Option<&mut crate::profile::Profiler>,
     ) {
         let reanchor = match &self.anchor {
             Some((k, a)) => *k != key || vec3::norm(vec3::sub(a.origin_km, eye_km)) > REANCHOR_KM,
@@ -83,7 +85,7 @@ impl TerrainField {
 
         self.tile_gen.atlas.begin_frame();
         let plan = self.tile_gen.atlas.plan(&wanted, TILE_BUDGET);
-        let made = self.tile_gen.generate(device, queue, key, planet, anchor, &plan);
+        let made = self.tile_gen.generate(device, queue, key, planet, anchor, &plan, profiler);
 
         self.drawn.clear();
         let mut shown_already = HashSet::new();
