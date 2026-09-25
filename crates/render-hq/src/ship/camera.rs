@@ -34,7 +34,7 @@ pub struct ChaseCamera {
 
 /// Orbit centre (ship frame, m): the middle of the hull, a little above
 /// the axis.
-const TARGET: V3 = [-1.0, 0.0, 1.5];
+pub const TARGET: V3 = [-1.0, 0.0, 1.5];
 /// The view is tilted up by this much from looking straight at the orbit
 /// centre, so the ship sits in the lower part of the frame and the scene
 /// ahead stays in view.
@@ -101,6 +101,30 @@ fn look_axes(yaw: f64, pitch: f64) -> [V3; 3] {
     [fwd, vec3::cross(up, fwd), up]
 }
 
+/// TAA's reprojection of ship pixels, from a direction `n` in the current
+/// camera axes to the previous frame's (up to scale, as rows applied to
+/// `n`). Row a is the previous camera axis a in the current axes, plus
+/// the parallax of the camera's move for points on the plane through the
+/// orbit centre facing the camera: a homography, exact at the centre and
+/// close across the hull. Rotation alone, as before, misplaced the history
+/// by the orbit angle whenever the chase camera was orbited, so it was
+/// rejected and the hull's edges flickered.
+pub fn reprojection(prev: &Pose, cur: &Pose) -> [[f32; 4]; 4] {
+    // A point X = c + s d on the current ray d = Σ n_b axis_b lies on the
+    // plane when s = depth / n_forward; seen from before it's along
+    // A_prev (X − c_prev) ∝ A_prev d + (n_forward / depth) A_prev (c − c_prev).
+    let depth = vec3::dot(vec3::sub(TARGET, cur.pos), cur.axes[0]).max(1.0);
+    let moved = vec3::sub(cur.pos, prev.pos);
+    let mut m = [[0.0f32; 4]; 4];
+    for (a, row) in m.iter_mut().take(3).enumerate() {
+        for (b, v) in row.iter_mut().take(3).enumerate() {
+            *v = vec3::dot(prev.axes[a], cur.axes[b]) as f32;
+        }
+        row[0] += (vec3::dot(prev.axes[a], moved) / depth) as f32;
+    }
+    m
+}
+
 /// Components in the ship frame of a vector given in camera axes.
 pub fn to_ship(axes: &[V3; 3], v: V3) -> V3 {
     std::array::from_fn(|m| v[0] * axes[0][m] + v[1] * axes[1][m] + v[2] * axes[2][m])
@@ -121,6 +145,32 @@ mod tests {
             let c = vec3::cross(a[0], a[1]);
             assert!(vec3::norm(vec3::sub(c, a[2])) < 1e-12);
         }
+    }
+
+    /// Orbiting the chase camera: the reprojection takes the orbit centre's
+    /// direction now to its direction on the previous frame exactly.
+    #[test]
+    fn reprojection_follows_the_orbit() {
+        let prev = ChaseCamera { chase: true, ..Default::default() };
+        let mut cur = prev;
+        cur.orbit(0.05, -0.03);
+        cur.zoom(1.1);
+        let (p, c) = (prev.pose(), cur.pose());
+        let m = reprojection(&p, &c);
+        let in_axes = |pose: &Pose, x: V3| {
+            let d = vec3::sub(x, pose.pos);
+            vec3::normalize(std::array::from_fn(|a| vec3::dot(pose.axes[a], d)))
+        };
+        let check = |x: V3, tol: f64| {
+            let n = in_axes(&c, x);
+            let np: V3 = std::array::from_fn(|a| (0..3).map(|b| m[a][b] as f64 * n[b]).sum());
+            let err = vec3::norm(vec3::sub(vec3::normalize(np), in_axes(&p, x)));
+            assert!(err < tol, "{x:?}: {err}");
+        };
+        check(TARGET, 1e-6);
+        // Hull points off the plane: within a fraction of the camera's turn.
+        check([12.0, 0.0, 1.0], 0.2 * 0.06);
+        check([-15.0, 3.0, 0.0], 0.2 * 0.06);
     }
 
     /// The default chase view is behind and above the ship, looking

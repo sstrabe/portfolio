@@ -162,7 +162,7 @@ pub struct Post {
     count: u32,
     parity: usize,
     prev_tetrad: Option<kerr::pilot::Tetrad>,
-    prev_camera: Option<[kerr::vec3::V3; 3]>,
+    prev_camera: Option<crate::ship::camera::Pose>,
     still_frames: u32,
     last_wall: Option<f64>,
     snap_frames: u32,
@@ -606,15 +606,8 @@ impl Post {
         }
         self.prev_tetrad = Some(view);
         // The ship moves with the camera: its pixels only move when the
-        // camera turns relative to it (the chase camera being orbited).
-        // Row a: the previous frame's camera axis a in this frame's axes.
-        let prev_camera = self.prev_camera.unwrap_or(ctx.camera);
-        let mut ship_m = [[0.0f32; 4]; 4];
-        for (a, row) in ship_m.iter_mut().take(3).enumerate() {
-            for (b, v) in row.iter_mut().take(3).enumerate() {
-                *v = kerr::vec3::dot(prev_camera[a], ctx.camera[b]) as f32;
-            }
-        }
+        // camera moves relative to it (the chase camera orbited or zoomed).
+        let ship_m = crate::ship::camera::reprojection(&self.prev_camera.unwrap_or(ctx.camera), &ctx.camera);
         self.prev_camera = Some(ctx.camera);
         self.still_frames = if dev < 2e-6 { self.still_frames + 1 } else { 0 };
         let cap = if self.still_frames > 2 {
