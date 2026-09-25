@@ -33,12 +33,19 @@ fn clouds_present(a: AtmoGeom) -> bool {
 // Extinction (km⁻¹) at body-fixed position q (km), height fraction hf in
 // the layer; `fp_km` is the pixel footprint there (km, large to skip
 // detail).
-fn clouds_density(a: AtmoGeom, q: vec3<f32>, hf: f32, fp_km: f32, full: bool) -> f32 {
+fn clouds_density(p: Planet, a: AtmoGeom, q: vec3<f32>, hf: f32, fp_km: f32, full: bool) -> f32 {
     if (hf <= 0.0 || hf >= 1.0) {
         return 0.0;
     }
     let w = textureSampleLevel(cloud_maps, atmo_clamp, q, i32(a.ids.z), 0.0);
-    let cov = w.r;
+    var cov = w.r;
+    // Where the planet's climate is baked, clouds follow the rain: sparse
+    // over deserts, the subtropical highs and the lee of mountains (the
+    // sunny coasts), thicker where it's wet.
+    if (p.detail.y > 0.5) {
+        let rain = map_climate(normalize(q)).y;
+        cov = saturate(cov * mix(0.15, 1.25, smoothstep(300.0, 2500.0, rain)));
+    }
     if (cov < 0.01 || hf >= w.g) {
         return 0.0;
     }
@@ -138,7 +145,7 @@ fn clouds_march(p: Planet, a: AtmoGeom, ray: AtmoRay, u0: f32, len: f32, sun: Su
         let r = length(x);
         let hf = (r - rb) / thick;
         let u = u0 + t;
-        let sigma = clouds_density(a, planet_body(p, x, -u), hf, fp * u, true);
+        let sigma = clouds_density(p, a, planet_body(p, x, -u), hf, fp * u, true);
         if (sigma <= 1e-4) {
             continue;
         }
@@ -154,7 +161,7 @@ fn clouds_march(p: Planet, a: AtmoGeom, ray: AtmoRay, u0: f32, len: f32, sun: Su
             var tau = 0.0;
             for (var j = 0.0; j < 3.0; j += 1.0) {
                 let xs = x + ls * (j + 0.5) * (j + 0.5) / 9.0 * sun.dir;
-                let d = clouds_density(a, planet_body(p, xs, -u), (length(xs) - rb) / thick, 1e3, false);
+                let d = clouds_density(p, a, planet_body(p, xs, -u), (length(xs) - rb) / thick, 1e3, false);
                 tau += d * ls * (2.0 * j + 1.0) / 9.0;
             }
             let beer = exp(-tau);
@@ -213,7 +220,7 @@ fn clouds_sun_transmittance(p: Planet, a: AtmoGeom, x: vec3<f32>, sun: SunLight)
         }
         let xj = x + atmo_dist_to_sphere(r, mu_s, rj) * sun.dir;
         let mu_j = dot(xj, sun.dir) / rj;
-        tau += clouds_density(a, planet_body(p, xj, 0.0), hf, 1e3, true) * thick / 3.0 / max(mu_j, 0.03);
+        tau += clouds_density(p, a, planet_body(p, xj, 0.0), hf, 1e3, true) * thick / 3.0 / max(mu_j, 0.03);
     }
     return exp(-tau);
 }
@@ -234,7 +241,7 @@ fn clouds_diffuse(p: Planet, a: AtmoGeom, x: vec3<f32>) -> vec2<f32> {
     for (var j = 0.0; j < 3.0; j += 1.0) {
         let hf = (j + 0.5) / 3.0;
         let q = planet_body(p, up * (rb + hf * a.clouds.z), 0.0);
-        tau += clouds_density(a, q, hf, 1e3, true) * a.clouds.z / 3.0;
+        tau += clouds_density(p, a, q, hf, 1e3, true) * a.clouds.z / 3.0;
     }
     return vec2<f32>(tau, 1.0);
 }

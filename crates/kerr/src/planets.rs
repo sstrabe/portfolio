@@ -444,10 +444,12 @@ fn make_atmosphere(rng: &mut Rng, kind: PlanetKind) -> Option<Atmosphere> {
         })
     };
     match kind {
+        // Living worlds' air stays close to Earth's (clear blue skies); the
+        // draws are the same as ever, so nothing else changes.
         Ocean => Some(Atmosphere {
-            rayleigh_density: rng.range(0.7, 1.6),
-            mie_density: rng.range(0.5, 2.0),
-            ozone: rng.range(0.4, 1.3),
+            rayleigh_density: rng.range(0.9, 1.1),
+            mie_density: rng.range(0.6, 1.2),
+            ozone: rng.range(0.8, 1.2),
             clouds: clouds(rng, 0.35, 0.7),
             ..earth
         }),

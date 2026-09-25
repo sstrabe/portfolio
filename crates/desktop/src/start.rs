@@ -302,7 +302,12 @@ fn on_ground(world: &mut World, g: GroundStart, gpu: &Gpu) -> Result<String, Str
     let mut sea_side = None;
     let up = match g.site {
         Site::Here => up,
-        Site::Land | Site::Coast | Site::Island => {
+        Site::Island => {
+            let (site, sea) = sunny_shore(&planet, &axes, up, &terrain_at, gpu)?;
+            sea_side = Some(sea);
+            site
+        }
+        Site::Land | Site::Coast => {
             // Around an island summit look for its own shore (a cap of
             // ~150 km); elsewhere within 25°.
             let cap = if g.site == Site::Island { 150.0 / planet.radius_km } else { 25f64.to_radians() };
@@ -384,6 +389,71 @@ fn on_ground(world: &mut World, g: GroundStart, gpu: &Gpu) -> Result<String, Str
     ))
 }
 
+/// The shore of an island on its sunniest side: from the summit `summit`
+/// (planet-frame unit vector) walk out along 16 bearings to the sea, find
+/// each shoreline by bisection, and take the one where the baked climate
+/// has the least rain (the lee of the mountains, where clouds are few).
+/// Returns the site 30 m inland of that shore and a point out at sea.
+fn sunny_shore(
+    planet: &planets::Planet,
+    axes: &[V3; 3],
+    summit: V3,
+    terrain_at: &dyn Fn(&[V3]) -> Vec<terrain::probe::Sample>,
+    gpu: &Gpu,
+) -> Result<(V3, V3), String> {
+    let dry = |s: &terrain::probe::Sample| s.fill != 1 || s.solid_km > 0.002;
+    let e1 = vec3::any_orthogonal(summit);
+    let e2 = vec3::cross(summit, e1);
+    let bearings: Vec<V3> = (0..16)
+        .map(|k| {
+            let a = k as f64 * std::f64::consts::TAU / 16.0;
+            vec3::add(vec3::scale(e1, a.cos()), vec3::scale(e2, a.sin()))
+        })
+        .collect();
+    let along = |b: V3, km: f64| {
+        let a = km / planet.radius_km;
+        vec3::add(vec3::scale(summit, a.cos()), vec3::scale(b, a.sin()))
+    };
+    // Out to 400 km in 1 km steps (young shields merge along their chain
+    // into islands hundreds of km long): the first wet sample brackets the
+    // shore.
+    let (steps, step_km) = (400, 1.0);
+    let walk: Vec<V3> = bearings.iter().flat_map(|&b| (0..steps).map(move |k| along(b, k as f64 * step_km))).collect();
+    let samples = terrain_at(&walk);
+    let mut brackets: Vec<(V3, f64, f64)> = bearings
+        .iter()
+        .enumerate()
+        .filter_map(|(j, &b)| {
+            let first_wet = (0..steps).find(|&k| !dry(&samples[j * steps + k]))?;
+            (first_wet > 0).then(|| (b, (first_wet - 1) as f64 * step_km, first_wet as f64 * step_km))
+        })
+        .collect();
+    if brackets.is_empty() {
+        return Err("no shore around the island".into());
+    }
+    for _ in 0..30 {
+        let mids: Vec<V3> = brackets.iter().map(|&(b, lo, hi)| along(b, 0.5 * (lo + hi))).collect();
+        let s = terrain_at(&mids);
+        for ((_, lo, hi), s) in brackets.iter_mut().zip(&s) {
+            let mid = 0.5 * (*lo + *hi);
+            if dry(s) {
+                *lo = mid;
+            } else {
+                *hi = mid;
+            }
+        }
+    }
+    let mut maps = terrain::maps::SurfaceMaps::new(&gpu.device);
+    maps.bake(&gpu.device, &gpu.queue, (usize::MAX, 0, 0), planet);
+    let climate = maps.read_climate(&gpu.device, &gpu.queue);
+    let rain = |d: V3| climate.at(terrain::to_body(axes, d))[1];
+    let &(b, lo, _) = brackets
+        .iter()
+        .min_by(|x, y| rain(along(x.0, x.1)).total_cmp(&rain(along(y.0, y.1))))
+        .ok_or("no shore around the island")?;
+    Ok((along(b, (lo - 0.03).max(0.0)), along(b, lo + 1.0)))
+}
+
 /// The summit (body-fixed direction) of the tallest young hotspot island
 /// within 25° of the equator, and its local solar time now (hours).
 fn find_island(world: &World, sys: &planets::System, i: usize, probe: &Probe, gpu: &Gpu) -> Result<(V3, f64), String> {
@@ -393,12 +463,43 @@ fn find_island(world: &World, sys: &planets::System, i: usize, probe: &Probe, gp
         .filter(|q| q[2].abs() < 25f64.to_radians().sin())
         .collect::<Vec<_>>();
     let samples = probe.sample(&gpu.device, &gpu.queue, planet, &tropics, 5.0);
-    let (q, _) = tropics
-        .iter()
-        .zip(&samples)
-        .filter(|(_, s)| s.surface_km > 0.0 && s.hotspot[0] > 1.0)
-        .max_by(|a, b| a.1.hotspot[0].total_cmp(&b.1.hotspot[0]))
+    // Prefer the trade-wind belt (like Hawaii at ~20°): the equator's
+    // convergence zone is the cloudiest, rainiest place on a world. The
+    // tallest island there that the sea surrounds (at least 5 of 8 points
+    // on a 120 km ring are sea): young shields merge along their chains, and
+    // some sit on continents.
+    let island = |band: &dyn Fn(f64) -> bool| -> Option<V3> {
+        let mut cands: Vec<(V3, f32)> = tropics
+            .iter()
+            .zip(&samples)
+            .filter(|(q, s)| s.surface_km > 0.0 && s.hotspot[0] > 1.0 && band(q[2].abs().asin().to_degrees()))
+            .map(|(q, s)| (*q, s.hotspot[0]))
+            .collect();
+        cands.sort_by(|a, b| b.1.total_cmp(&a.1));
+        cands.truncate(300);
+        let ring = |q: V3| -> Vec<V3> {
+            let (e1, a) = (vec3::any_orthogonal(q), 120.0 / planet.radius_km);
+            let e2 = vec3::cross(q, e1);
+            (0..8)
+                .map(|k| {
+                    let b = k as f64 * std::f64::consts::FRAC_PI_4;
+                    let side = vec3::add(vec3::scale(e1, b.cos()), vec3::scale(e2, b.sin()));
+                    vec3::add(vec3::scale(q, a.cos()), vec3::scale(side, a.sin()))
+                })
+                .collect()
+        };
+        let rings: Vec<V3> = cands.iter().flat_map(|c| ring(c.0)).collect();
+        let around = probe.sample(&gpu.device, &gpu.queue, planet, &rings, 5.0);
+        cands
+            .iter()
+            .enumerate()
+            .find(|(k, _)| around[8 * k..8 * k + 8].iter().filter(|s| s.surface_km <= 0.0).count() >= 5)
+            .map(|(_, c)| c.0)
+    };
+    let q = island(&|lat| (12.0..25.0).contains(&lat))
+        .or_else(|| island(&|_| true))
         .ok_or("no volcanic islands in the tropics of this world")?;
+    let q = &q;
     // Local solar time now: the angle between the site and the subsolar
     // meridian, in the planet frame.
     let t = world.cluster.t;
