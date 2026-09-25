@@ -8,6 +8,7 @@
 pub mod anchor;
 pub mod atlas;
 pub mod cube;
+pub mod field;
 pub mod maps;
 pub mod probe;
 pub mod tilegen;

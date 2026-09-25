@@ -75,6 +75,16 @@ pub struct SelectedPlanet {
     pub distance_km: f64,
     /// Angular radius of the planet as seen from the pilot (rest frame).
     pub angular_radius: f64,
+    /// The planet's body-fixed axes now, in the same axes as `centre_km`
+    /// (as `planet_body` in `near.wgsl` builds them, in f64).
+    pub body_axes: [V3; 3],
+}
+
+impl SelectedPlanet {
+    /// Where the pilot is in body-fixed coordinates: km from the centre.
+    pub fn pilot_body_km(&self) -> V3 {
+        crate::terrain::to_body(&self.body_axes, vec3::scale(self.centre_km, -1.0))
+    }
 }
 
 impl SelectedPlanet {
@@ -196,7 +206,10 @@ pub fn select(world: &World, e: &kerr::pilot::Tetrad, pixel_angle: f64) -> Selec
             let (ri, ro, rt, rd) =
                 p.rings.map_or((0.0, 0.0, 0.0, 0.0), |r| (r.inner_km, r.outer_km, r.optical_depth, r.dust));
             let distance_km = vec3::norm(centre);
+            let (sin, cos) = angle.sin_cos();
+            let e1 = vec3::add(vec3::scale(axis0, cos), vec3::scale(vec3::cross(spin, axis0), sin));
             sel.planets.push(SelectedPlanet {
+                body_axes: [e1, vec3::cross(spin, e1), spin],
                 system: slot,
                 index: i,
                 centre_km: centre,
@@ -252,6 +265,8 @@ pub struct NearField {
     pub selection: Selection,
     /// Baked maps (climate) of the nearest solid world with air.
     pub maps: crate::terrain::maps::SurfaceMaps,
+    /// Terrain tiles around the pilot on that world.
+    pub terrain: crate::terrain::field::TerrainField,
 }
 
 /// Maps are baked for a solid world with air once the pilot is within this
@@ -314,7 +329,8 @@ impl NearField {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&maps.sampler) },
             ],
         });
-        Self { layout, bind_group, systems, planets, selection: Selection::default(), maps }
+        let terrain = crate::terrain::field::TerrainField::new(device);
+        Self { layout, bind_group, systems, planets, selection: Selection::default(), maps, terrain }
     }
 
     pub fn layout(&self) -> &wgpu::BindGroupLayout {
@@ -356,6 +372,17 @@ impl NearField {
             self.maps.bake(device, queue, key, &planet);
         }
         let baked = self.maps.baked;
+        // Keep that world's terrain tiles filled around the pilot.
+        if let Some(key) = baked
+            && let Some(p) = self.selection.planets.iter().find(|p| {
+                let sys = &self.selection.systems[p.system].system;
+                (sys.star, sys.generation, p.index) == key
+            })
+        {
+            let planet = p.planet(&self.selection).clone();
+            let eye = p.pilot_body_km();
+            self.terrain.update(device, queue, key, &planet, eye, pixel_angle);
+        }
         let systems: Vec<SystemGpu> = self.selection.systems.iter().map(|s| s.gpu).collect();
         let planets: Vec<PlanetGpu> = self
             .selection

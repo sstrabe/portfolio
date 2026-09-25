@@ -110,6 +110,17 @@ pub fn run(o: &Options) -> Result<(), String> {
         m.p95,
         m.fifth_star
     );
+    let ts = s.gpu.near.terrain.stats;
+    if ts.selected > 0 {
+        println!(
+            "terrain tiles: {} selected, {} resident, {} drawn (finest level {}), {} still shown by an ancestor",
+            ts.selected,
+            ts.resident,
+            s.gpu.near.terrain.drawn.len(),
+            ts.finest,
+            ts.standing_in
+        );
+    }
     Ok(())
 }
 
