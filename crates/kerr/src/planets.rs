@@ -101,6 +101,10 @@ pub struct Rings {
     pub outer_km: f64,
     /// Normal optical depth of the densest part.
     pub optical_depth: f64,
+    /// Fraction of the particle surface that is dark silicate/organic dust
+    /// rather than water ice: 0 is bright and clean like Saturn's main
+    /// rings, 1 is dark and red like Jupiter's or Uranus's.
+    pub dust: f64,
 }
 
 /// A Keplerian orbit around the star, oriented in the simulation's
@@ -174,6 +178,10 @@ pub struct Planet {
     pub sea_level: f64,
     /// Radiative equilibrium temperature, K.
     pub equilibrium_temperature: f64,
+    /// Typical surface wind speed 10 m above the ground or sea, m/s (0
+    /// without an atmosphere). It sets how rough seas are, and so how wide
+    /// the sun glint spreads (Cox & Munk 1954).
+    pub wind_speed_m_s: f64,
     pub atmosphere: Option<Atmosphere>,
     pub rings: Option<Rings>,
 }
@@ -364,18 +372,36 @@ fn make_planet(rng: &mut Rng, kind: PlanetKind, a_km: f64, normal: V3, insolatio
     let spin_axis = vec3::rotate(plane_normal, vec3::any_orthogonal(plane_normal), obliquity);
     let rotation_period_h = if kind.is_giant() { rng.range(9.0, 17.0) } else { rng.range(10.0, 40.0) };
     let (relief_km, sea_level) = match kind {
-        Ocean => (rng.range(6.0, 10.0), rng.range(0.55, 0.75)),
-        Rocky => (rng.range(4.0, 12.0), if rng.uniform() < 0.3 { rng.range(0.05, 0.3) } else { 0.0 }),
+        // Earth: 20 km from the Mariana Trench to Everest, 11 of them under
+        // the sea; the Moon 20 km, Mars 30 km.
+        Ocean => (rng.range(12.0, 20.0), rng.range(0.55, 0.75)),
+        Rocky => (rng.range(8.0, 20.0), if rng.uniform() < 0.3 { rng.range(0.05, 0.3) } else { 0.0 }),
         Desert => (rng.range(3.0, 9.0), 0.0),
         Ice => (rng.range(2.0, 6.0), 0.0),
         Lava => (rng.range(3.0, 7.0), rng.range(0.2, 0.45)),
         GasGiant | IceGiant => (0.0, 0.0),
     };
+    // Surface details draw from their own stream so adding one never
+    // reshuffles the orbits and kinds of the planets after this one.
+    let mut detail = Rng::new(0x51_7e5e_ed00 ^ u64::from(seed).wrapping_mul(0x2545_f491_4f6c_dd1d));
     let rings = (kind.is_giant() && rng.uniform() < if kind == GasGiant { 0.4 } else { 0.25 }).then(|| {
         let r = radius_re * EARTH_RADIUS_KM;
         let inner = r * rng.range(1.25, 1.6);
-        Rings { inner_km: inner, outer_km: inner + r * rng.range(0.5, 1.2), optical_depth: rng.range(0.3, 1.5) }
+        Rings {
+            inner_km: inner,
+            outer_km: inner + r * rng.range(0.5, 1.2),
+            optical_depth: rng.range(0.3, 1.5),
+            // Ice giants' rings are dark (radiation-darkened methane ice);
+            // gas giants' range from clean ice to dusty.
+            dust: if kind == IceGiant { detail.range(0.6, 1.0) } else { detail.uniform().powi(2) },
+        }
     });
+    // Same draw order as before the surface details existed.
+    let rotation0 = rng.range(0.0, std::f64::consts::TAU);
+    let atmosphere = make_atmosphere(rng, kind);
+    // Trade-wind-like speeds, log-normal about 6 m/s (Earth's ocean mean is
+    // about 7 m/s).
+    let wind_speed_m_s = atmosphere.map_or(0.0, |_| (6.0 * (0.35 * detail.normal()).exp()).clamp(1.0, 20.0));
     Planet {
         kind,
         seed,
@@ -384,11 +410,12 @@ fn make_planet(rng: &mut Rng, kind: PlanetKind, a_km: f64, normal: V3, insolatio
         orbit,
         rotation_period_s: rotation_period_h * 3600.0,
         spin_axis,
-        rotation0: rng.range(0.0, std::f64::consts::TAU),
+        rotation0,
         relief_km,
         sea_level,
         equilibrium_temperature: 278.6 * insolation.powf(0.25),
-        atmosphere: make_atmosphere(rng, kind),
+        wind_speed_m_s,
+        atmosphere,
         rings,
     }
 }
@@ -541,6 +568,9 @@ mod tests {
                 assert!(p.orbit.a_km * (1.0 + p.orbit.e) < 0.45 * hill);
                 assert!(p.orbit.a_km > s.star_radius_km * 3.0);
                 assert!(p.radius_km > 1000.0 && p.radius_km < 1.0e5);
+                assert_eq!(p.wind_speed_m_s > 0.0, p.atmosphere.is_some());
+                assert!(p.wind_speed_m_s <= 20.0);
+                assert!(p.rings.is_none_or(|r| (0.0..=1.0).contains(&r.dust)));
             }
         }
         assert!(count > 100, "only {count} systems");

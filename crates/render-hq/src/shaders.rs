@@ -25,6 +25,7 @@ fn assemble(parts: &[&str]) -> String {
 pub fn trace() -> String {
     assemble(&[wgsl!(
         "near.wgsl",
+        "terrain.wgsl",
         "planet.wgsl",
         "atmo_common.wgsl",
         "atmosphere.wgsl",

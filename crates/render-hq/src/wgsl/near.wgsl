@@ -31,8 +31,9 @@ struct Planet {
     spin: vec4<f32>,    // rotation axis (unit), rotation angle at time 0 (rad)
     axis0: vec4<f32>,   // body-fixed x axis at angle 0 (unit, ⟂ spin), angular speed (rad per km of light travel)
     surface: vec4<f32>, // relief (km), sea level (fraction of relief), equilibrium temperature (K), atmosphere top (km, 0: none)
-    rings: vec4<f32>,   // inner radius (km), outer radius (km), optical depth (0: none), unused
+    rings: vec4<f32>,   // inner radius (km), outer radius (km), optical depth (0: none), dust fraction
     ids: vec4<u32>,     // kind (PlanetKind), seed, system slot, own slot
+    detail: vec4<f32>,  // surface wind speed (m/s), unused, unused, unused
 }
 
 @group(1) @binding(0) var<storage, read> systems: array<StarSystem>;
