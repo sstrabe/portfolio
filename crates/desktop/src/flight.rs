@@ -197,23 +197,24 @@ pub fn spectral_class(t: f64) -> char {
     }
 }
 
-/// A speed given as a fraction of c.
+/// A speed or a velocity component, given as a fraction of c.
 pub fn speed(v: f64) -> String {
     let km_s = v * C_KM_S;
     match km_s {
         s if s < 1.0 => format!("{:.1} m/s", s * 1000.0),
         s if s < 1000.0 => format!("{s:.2} km/s"),
         s if v < 0.2 => format!("{s:.0} km/s"),
-        _ => {
-            let gamma = 1.0 / (1.0 - v * v).max(1e-300).sqrt();
-            if gamma < 1.5 {
-                format!("{v:.4} c")
-            } else if gamma < 1000.0 {
-                format!("gamma {gamma:.2}")
-            } else {
-                format!("gamma {gamma:.3e}")
-            }
-        }
+        _ => format!("{v:.5} c"),
+    }
+}
+
+/// The ship's speed: as a speed while that says something, else as its
+/// Lorentz factor.
+pub fn motion(v: f64, gamma: f64) -> String {
+    match gamma {
+        g if g < 1.5 => speed(v),
+        g if g < 1000.0 => format!("gamma {g:.2}"),
+        g => format!("gamma {g:.3e}"),
     }
 }
 
@@ -266,16 +267,20 @@ pub fn marker(o: &mut Overlay, m: Marker, p: [f32; 2], r: f32, alpha: f32) {
     };
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI as PI32};
     match m {
-        Marker::Prograde | Marker::Retrograde => {
+        Marker::Prograde => {
             o.ring(p, r, w, c);
             for ang in [-FRAC_PI_2, 0.0, PI32] {
                 tick(o, ang, r, r * 1.7);
             }
-            if m == Marker::Prograde {
-                o.disc(p, w, c);
-            } else {
-                x(o);
-            }
+            o.disc(p, w, c);
+        }
+        Marker::Retrograde => {
+            // An X through the ring, reaching past it, so it can't be
+            // mistaken for prograde.
+            o.ring(p, r, w, c);
+            let k = r * 1.3;
+            o.line(at(-k, -k), at(k, k), w, c);
+            o.line(at(-k, k), at(k, -k), w, c);
         }
         Marker::Normal | Marker::AntiNormal => {
             let s = if m == Marker::Normal { 1.0 } else { -1.0 };
@@ -535,7 +540,7 @@ fn navball(o: &mut Overlay, nav: &Nav, c: [f32; 2], r: f32, ui: f32) {
 fn gauges(o: &mut Overlay, world: &World, nav: &Nav, controls: &Controls, c: [f32; 2], r: f32, s: f32) {
     let line = 10.0 * s;
     let top = c[1] - r - 3.0 * s;
-    let text = format!("{}  {}", nav.name, speed(nav.speed()));
+    let text = format!("{}  {}", nav.name, motion(nav.speed(), nav.rel.gamma));
     let tw = Overlay::text_width(&text, s);
     o.rect([c[0] - tw * 0.5 - 6.0, top - line - 4.0], [c[0] + tw * 0.5 + 6.0, top + 2.0], PANEL);
     o.text([c[0] - tw * 0.5, top - line], &text, s, PROGRADE);

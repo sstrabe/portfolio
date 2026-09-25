@@ -290,6 +290,9 @@ pub struct Relative {
     pub radius: f64,
     /// The ship's velocity relative to the body, in the ship frame.
     pub ship_velocity: V3,
+    /// Lorentz factor of that velocity, computed directly so it stays
+    /// accurate at any speed (1 − v² loses everything at high γ).
+    pub gamma: f64,
 }
 
 /// The ship relative to a planet.
@@ -1017,7 +1020,15 @@ impl World {
         let (t, pos) = (self.pilot.x[0], self.pilot.position());
         let u = self.pilot.e[0];
         let v = [u[1] / u[0], u[2] / u[0], u[3] / u[0]];
-        let ship_velocity = |w: V4| vec3::scale(self.pilot.relative_velocity(&self.kerr, w), -1.0);
+        // At γ ~ 10⁴ the components of the relative velocity carry errors of
+        // ~ε γ², so take only its direction from them and its size from γ.
+        let gamma = |w: V4| (-self.kerr.dot(pos, w, self.pilot.e[0])).max(1.0);
+        let ship_velocity = |w: V4| {
+            let v = vec3::scale(self.pilot.relative_velocity(&self.kerr, w), -1.0);
+            let g = gamma(w);
+            let speed = (1.0 - 1.0 / (g * g)).max(0.0).sqrt();
+            if vec3::norm(v) > 0.0 { vec3::scale(vec3::normalize(v), speed) } else { v }
+        };
         if let Some(l) = self.local.as_ref().filter(|l| self.cfg.local_gravity && l.reaches(t, pos)) {
             let (body, _) = l.dominant(t, pos);
             let (x, vb) = l.body_state(body, t);
@@ -1034,6 +1045,7 @@ impl World {
                     mu,
                     radius,
                     ship_velocity: ship_velocity(w),
+                    gamma: gamma(w),
                 };
             }
         }
@@ -1044,6 +1056,7 @@ impl World {
             mu: self.kerr.m,
             radius: self.kerr.r_plus(),
             ship_velocity: ship_velocity(self.normal_observer()),
+            gamma: gamma(self.normal_observer()),
         }
     }
 
@@ -1588,6 +1601,30 @@ mod tests {
         assert!((vec3::norm(rel.ship_velocity) / speed - 1.0).abs() < 1e-3);
         // Facing along the velocity: prograde is dead ahead.
         assert!(rel.ship_velocity[0] / vec3::norm(rel.ship_velocity) > 0.999);
+    }
+
+    /// A pc out, flying outward at γ ≈ 45,000 tail first: the Lorentz
+    /// factor against the hole stays exact and prograde is dead astern.
+    #[test]
+    fn reference_at_extreme_gamma() {
+        let mut w = World::new(WorldConfig::sgr_a(400, 1));
+        let dir = vec3::normalize([-0.64, -0.54, -0.55]);
+        // Just below the outgoing speed of light in Kerr–Schild coordinates,
+        // (r − 2M) / (r + 2M).
+        let r = 4.75e6;
+        let v = (r - 2.0) / (r + 2.0) * (1.0 - 2.5e-10);
+        let (pos, vel) = (vec3::scale(dir, r), vec3::scale(dir, v));
+        let mut pilot = Pilot::new(&w.kerr, pos, vel, vec3::scale(dir, -1.0), vec3::any_orthogonal(dir)).unwrap();
+        pilot.x[0] = w.pilot.x[0];
+        w.pilot = pilot;
+        let rel = w.reference();
+        assert_eq!(rel.reference, Reference::Hole);
+        let expect = w.pilot.normal_gamma(&w.kerr);
+        assert!(expect > 4e4, "{expect}");
+        assert!((rel.gamma / expect - 1.0).abs() < 1e-6, "{} vs {expect}", rel.gamma);
+        let speed = vec3::norm(rel.ship_velocity);
+        assert!((1.0 / (1.0 - speed * speed).sqrt() / expect - 1.0).abs() < 1e-2);
+        assert!(rel.ship_velocity[0] / speed < -0.999, "{:?}", rel.ship_velocity);
     }
 
     #[test]
