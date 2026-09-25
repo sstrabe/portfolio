@@ -37,6 +37,12 @@ struct SurfaceHit {
     sky_occlusion: f32,
 }
 
+// Terrain mirrored by the sea (`terrain_reflection` in `terrain_rq.wgsl`).
+struct TerrainReflection {
+    hit: bool,
+    L: Spectrum,
+}
+
 fn planet_terrain(p: Planet) -> TerrainParams {
     return terrain_params(p.ids.x, p.ids.y, p.centre.w, p.surface.x, p.surface.y, p.surface.z, p.surface.w > 0.0);
 }
@@ -484,7 +490,13 @@ fn planet_surface_radiance(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLi
         let below = spec_scale(spec_mul(water_reflectance(mat.depth_m), e_in), 0.54 / PI);
         let wind = p.detail.x;
         let glint = spec_scale(e_sun, ocean_glint(up, view, sun.dir, wind));
-        let sky = spec_scale(e_sky, fresnel_water(max(dot(up, view), 0.0)) / PI);
+        // The sky mirrored, or the land where a reflection ray meets it.
+        let fr = fresnel_water(max(dot(up, view), 0.0));
+        var sky = spec_scale(e_sky, fr / PI);
+        let land = terrain_reflection(p, h, view, sun, wind);
+        if (land.hit) {
+            sky = spec_scale(land.L, fr);
+        }
         return spec_add(spec_add(below, glint), sky);
     }
     let f = select(brdf_oren_nayar(h.normal, view, sun.dir), brdf_regolith(h.normal, view, sun.dir), mat.regolith);

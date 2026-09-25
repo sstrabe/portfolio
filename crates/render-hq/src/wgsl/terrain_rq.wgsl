@@ -137,8 +137,16 @@ fn terrain_surface_hit(p: Planet, o: vec3<f32>, dir: vec3<f32>, u_max: f32, fp: 
         return h;
     }
 
-    let layer = hit.instance_custom_data;
-    let st = tr_hit_st(hit.primitive_index, hit.barycentrics);
+    tr_tile_surface(p, &h, hit.instance_custom_data, hit.primitive_index, hit.barycentrics);
+    return h;
+}
+
+// Height, material channels and normal of a tile hit from the atlas (the
+// hit's `body`, `time` and `lod` already set).
+fn tr_tile_surface(p: Planet, hp: ptr<function, SurfaceHit>, layer: u32, prim: u32, bary: vec2<f32>) {
+    var h = *hp;
+    let up = h.body;
+    let st = tr_hit_st(prim, bary);
     let x = st * TR_SAMPLES + TR_APRON;
     h.height = tr_height(layer, x);
     let m = tr_material(layer, x);
@@ -162,7 +170,7 @@ fn terrain_surface_hit(p: Planet, o: vec3<f32>, dir: vec3<f32>, u_max: f32, fp: 
         nb = -nb;
     }
     h.normal = normalize(planet_inertial(p, nb, h.time));
-    return h;
+    *hp = h;
 }
 
 // How much of the sun the terrain hides from a tile hit: a ray towards a
@@ -211,4 +219,59 @@ fn terrain_sky_occlusion(p: Planet, h: SurfaceHit) -> f32 {
     rayQueryProceed(&rq);
     let hit = rayQueryGetCommittedIntersection(&rq);
     return select(0.0, 1.0, hit.kind != RAY_QUERY_INTERSECTION_NONE);
+}
+
+// The terrain mirrored by the sea at a tile-sea hit: one reflection ray per
+// frame and pixel off a wave facet drawn from the wind's slope
+// distribution (Cox & Munk, as `ocean_glint`), so TAA blurs the mirror as
+// the waves do. The land it meets is lit by the sun (with its shadow ray
+// skipped) and the sky.
+fn terrain_reflection(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLight, wind: f32) -> TerrainReflection {
+    var out: TerrainReflection;
+    out.hit = false;
+    if (!h.tiled) {
+        return out;
+    }
+    let up = h.body;
+    let v = normalize(planet_body(p, view, h.time));
+    let seed = tn_hash(bitcast<u32>(h.local.y) ^ tn_hash(bitcast<u32>(h.local.z) ^ tn_hash(bitcast<u32>(h.local.x) ^ (hq.size.z * 2891336453u))));
+    let r1 = max(f32(seed & 0xffffu) / 65535.0, 1e-6);
+    let r2 = f32(seed >> 16u) / 65535.0;
+    // Gaussian slopes (Box–Muller), variance σ²/2 per axis.
+    let sigma = sqrt(0.5 * (0.003 + 5.12e-3 * max(wind, 0.5)));
+    let g = sqrt(-2.0 * log(r1)) * vec2<f32>(cos(6.2831853 * r2), sin(6.2831853 * r2)) * sigma;
+    let t1 = normalize(cross(up, select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(up.z) > 0.9)));
+    let t2 = cross(up, t1);
+    let n = normalize(up - g.x * t1 - g.y * t2);
+    var r = reflect(-v, n);
+    if (dot(r, up) <= 1e-3) {
+        r = reflect(-v, up);
+    }
+    let o = h.local + up * (1e-5 + 1e-4 * h.u);
+    var rq: ray_query;
+    rayQueryInitialize(&rq, terrain_tlas, RayDesc(RAY_FLAG_FORCE_OPAQUE, 0xffu, 0.0, 50.0, o, r));
+    rayQueryProceed(&rq);
+    let hit = rayQueryGetCommittedIntersection(&rq);
+    if (hit.kind == RAY_QUERY_INTERSECTION_NONE) {
+        return out;
+    }
+    let tv = terrain_view;
+    var m: SurfaceHit;
+    m.hit = true;
+    m.tiled = true;
+    m.u = h.u + hit.t;
+    m.time = h.time;
+    m.local = o + hit.t * r;
+    let bpos = tv.anchor.xyz * tv.anchor.w + m.local;
+    m.body = normalize(bpos);
+    m.pos = planet_inertial(p, bpos, m.time);
+    m.lod = max(h.lod, 1e-5);
+    tr_tile_surface(p, &m, hit.instance_custom_data, hit.primitive_index, hit.barycentrics);
+    let mat = planet_material(planet_terrain(p), m, p.detail.y > 0.5);
+    let e_sun = spec_mul(sun.irradiance, atmo_sun_transmittance(p, m.pos, sun));
+    let e_sky = atmo_sky_irradiance(p, m.pos, m.normal, sun);
+    let nl = max(dot(m.normal, sun.dir), 0.0);
+    out.hit = true;
+    out.L = spec_mul(mat.albedo, spec_add(spec_scale(e_sun, nl / PI), spec_scale(e_sky, 1.0 / PI)));
+    return out;
 }
