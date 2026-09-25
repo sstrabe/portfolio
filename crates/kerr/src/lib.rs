@@ -41,6 +41,7 @@
 
 pub mod cluster;
 pub mod dual;
+pub mod frame;
 pub mod geodesic;
 pub mod history;
 pub mod integrate;

@@ -8,10 +8,16 @@
 //! star and planets are placed relative to the observer event in f64 and
 //! only then rounded to f32, so they stay precise however far from the hole
 //! the pilot is.
+//!
+//! Planets of the system the physics is flying in are placed with the
+//! physics' own functions ([`kerr::local::Local::planet_relative`], and for
+//! a landed ship its body-fixed offset), so the ground is drawn exactly
+//! where the ship stands on it.
 
 use bytemuck::{Pod, Zeroable};
 use kerr::cluster::Body;
 use kerr::geodesic;
+use kerr::local::PlanetRef;
 use kerr::planets::{self, C_KM_S, KM_PER_M, System};
 use kerr::units::{AU, SECONDS_PER_M};
 use kerr::vec3::{self, V3, V4};
@@ -61,6 +67,10 @@ pub struct SelectedPlanet {
     /// Index into that system's `planets`.
     pub index: usize,
     pub gpu: PlanetGpu,
+    /// The centre relative to the pilot (km, f64; the GPU copy is rounded
+    /// to f32): in the planet's own rest frame for the system the physics
+    /// is flying in, else in the system's.
+    pub centre_km: V3,
     /// Distance from the pilot to the planet's centre, km.
     pub distance_km: f64,
     /// Angular radius of the planet as seen from the pilot (rest frame).
@@ -115,26 +125,73 @@ pub fn select(world: &World, e: &kerr::pilot::Tetrad, pixel_angle: f64) -> Selec
         let disc_drawn = system.star_radius_km / star_dist.max(1.0) > pixel_angle / 3.0;
         let first = sel.planets.len() as u32;
         let slot = sel.systems.len();
+        // The physics' snapshot of this system, if it is flying in it.
+        let local = world.system_of(PlanetRef { star: system.star, generation: body.generation, planet: 0 });
+        let fix = world.surface_fix();
 
         for (i, p) in system.planets.iter().enumerate() {
             if sel.planets.len() >= MAX_PLANETS {
                 break;
             }
-            let (off_km, vel_km_s) = system.planet_state(i, t);
-            let off: V4 = [0.0, off_km[0] / KM_PER_M, off_km[1] / KM_PER_M, off_km[2] / KM_PER_M];
-            let event: V4 = std::array::from_fn(|m| d_star[m] + off[m]);
-            let x_km = vec3::scale(rest(event), KM_PER_M);
-            let t_km = rest_time(event) * KM_PER_M;
-            let v_rest = vec3::scale(rest([0.0, vel_km_s[0], vel_km_s[1], vel_km_s[2]]), 1.0 / C_KM_S);
+            let omega_s = std::f64::consts::TAU / p.rotation_period_s;
+            let a0c = vec3::any_orthogonal(p.spin_axis);
+            let spatial = |v: V3| -> V4 { [0.0, v[0], v[1], v[2]] };
+            // The planet event (relative to the pilot), its rest-frame time,
+            // its velocity, its spin axis and body x axis, and its rotation
+            // angle at that event.
+            let (x_km, t_km, v_rest, spin_v, a0, angle) = match local {
+                Some(l) => {
+                    // As the physics measures it, in the planet's own rest
+                    // frame (the shader's planet-centred coordinates); a
+                    // landed ship's place comes from its body-fixed offset.
+                    let (pos, centre_event, frame) = match fix {
+                        Some((fp, pt)) if fp.star == system.star && fp.planet == i => (pt.pos, pt.centre, pt.frame),
+                        _ => {
+                            let r = l.planet_relative(i, pilot.x);
+                            (r.pos, r.centre, r.frame)
+                        }
+                    };
+                    // The planet frame's axes: the system frame's, boosted by
+                    // the planet's velocity (no rotation), so the shader's
+                    // first-order ray transform lines up with them.
+                    let u_p = frame.e[0];
+                    let gamma_p = rest_time(u_p);
+                    let h: [V4; 3] = std::array::from_fn(|j| {
+                        let c = dot(u_p, f[j]) / (1.0 + gamma_p);
+                        std::array::from_fn(|m| f[j][m] + c * (u_p[m] + u[m]))
+                    });
+                    let planet_axes = |v: V4| -> V3 { std::array::from_fn(|j| dot(h[j], v)) };
+                    let to_centre = frame.displacement(0.0, vec3::scale(pos, -1.0));
+                    (
+                        vec3::scale(planet_axes(to_centre), KM_PER_M),
+                        // Simultaneous with the pilot in the planet's frame.
+                        0.0,
+                        vec3::scale(rest(u_p), 1.0 / gamma_p),
+                        planet_axes(frame.displacement(0.0, p.spin_axis)),
+                        planet_axes(frame.displacement(0.0, a0c)),
+                        p.rotation(centre_event[0] * SECONDS_PER_M),
+                    )
+                }
+                None => {
+                    let (off_km, vel_km_s) = system.planet_state(i, t);
+                    let off: V4 = [0.0, off_km[0] / KM_PER_M, off_km[1] / KM_PER_M, off_km[2] / KM_PER_M];
+                    let event: V4 = std::array::from_fn(|m| d_star[m] + off[m]);
+                    let t_km = rest_time(event) * KM_PER_M;
+                    (
+                        vec3::scale(rest(event), KM_PER_M),
+                        t_km,
+                        vec3::scale(rest(spatial(vel_km_s)), 1.0 / C_KM_S),
+                        rest(spatial(p.spin_axis)),
+                        rest(spatial(a0c)),
+                        // Rotation angle at the planet's event.
+                        p.rotation(t * SECONDS_PER_M) - omega_s * t_km / C_KM_S,
+                    )
+                }
+            };
             // Centre at rest-frame time 0.
             let centre = vec3::axpy(x_km, -t_km, v_rest);
-            let spin = vec3::normalize(rest([0.0, p.spin_axis[0], p.spin_axis[1], p.spin_axis[2]]));
-            let a0c = vec3::any_orthogonal(p.spin_axis);
-            let a0 = rest([0.0, a0c[0], a0c[1], a0c[2]]);
+            let spin = vec3::normalize(spin_v);
             let axis0 = vec3::normalize(vec3::axpy(a0, -vec3::dot(a0, spin), spin));
-            let omega_s = std::f64::consts::TAU / p.rotation_period_s;
-            // Rotation angle at the planet's event, then back to time 0.
-            let angle = p.rotation(t * SECONDS_PER_M) - omega_s * t_km / C_KM_S;
             let atmo_top = p.atmosphere.map_or(0.0, |a| a.top_km);
             let (ri, ro, rt, rd) =
                 p.rings.map_or((0.0, 0.0, 0.0, 0.0), |r| (r.inner_km, r.outer_km, r.optical_depth, r.dust));
@@ -142,6 +199,7 @@ pub fn select(world: &World, e: &kerr::pilot::Tetrad, pixel_angle: f64) -> Selec
             sel.planets.push(SelectedPlanet {
                 system: slot,
                 index: i,
+                centre_km: centre,
                 distance_km,
                 angular_radius: (p.radius_km / distance_km.max(p.radius_km)).asin(),
                 gpu: PlanetGpu {
@@ -302,5 +360,57 @@ mod tests {
         assert!(d.1.abs() < 1e-3 * r && d.2.abs() < 1e-3 * r, "{d:?}");
         assert!(sel.systems[0].gpu.beta[3] < 1e-6);
         assert!(p.angular_radius > 0.3);
+    }
+
+    /// Physics and rendering agree on where the ground is: a ship landed
+    /// 10 m up (from its body-fixed offset) and one flying 2 km up (from
+    /// its position) are drawn exactly that high, to 1 cm. Measured the old
+    /// way, in simulation coordinates, they were 77–109 m off.
+    #[test]
+    fn ground_is_where_the_physics_puts_it() {
+        let mut w = World::new(WorldConfig::sgr_a(300, 1));
+        let seed = w.cluster.cfg.seed;
+        let (star, system) = w
+            .cluster
+            .bodies
+            .iter()
+            .enumerate()
+            .find_map(|(i, b)| planets::system(seed, i, b).filter(|s| s.planets.len() > 1).map(|s| (i, s)))
+            .expect("a system");
+        let i = 1;
+        let body = &w.cluster.bodies[star];
+        let pref = PlanetRef { star, generation: body.generation, planet: i };
+        let r_km = system.planets[i].radius_km;
+        let (off_km, vel_km_s) = system.planet_state(i, w.cluster.t);
+        let pvel = vec3::add(geodesic::coordinate_velocity(&w.kerr, &body.state), vec3::scale(vel_km_s, 1.0 / C_KM_S));
+        // Fly in to 3 radii, co-moving, so the system becomes the local one.
+        let dir = vec3::normalize([0.3, -0.8, 0.5]);
+        let at =
+            vec3::add(body.position(), vec3::scale(vec3::add(off_km, vec3::scale(dir, 3.0 * r_km)), 1.0 / KM_PER_M));
+        let mut pilot = kerr::pilot::Pilot::new(&w.kerr, at, pvel, dir, vec3::any_orthogonal(dir)).unwrap();
+        pilot.x[0] = w.pilot.x[0];
+        w.pilot = pilot;
+        w.teleported();
+        let altitude = |w: &World| {
+            let sel = select(w, &w.pilot.e, 1e-3);
+            let p = sel.planets.iter().find(|p| p.gpu.ids[2] == 0 && p.index == i).expect("planet selected");
+            (vec3::norm(p.centre_km) - r_km) * 1000.0
+        };
+        // Landed 10 m up, a few directions.
+        for d in [[1.0, 0.0, 0.0], [0.0, -1.0, 0.3], [-0.4, 0.2, -0.9]] {
+            let offset = vec3::scale(vec3::normalize(d), (r_km + 0.01) / KM_PER_M);
+            assert!(w.land(pref, offset));
+            w.step(1.0 / 60.0, &kerr::world::Input { autopilot: -1, ..Default::default() });
+            let h = altitude(&w);
+            assert!((h - 10.0).abs() < 0.01, "landed: drawn {h} m up");
+        }
+        // Flying: whatever the physics' telemetry says.
+        w.status = kerr::world::PilotStatus::Free;
+        let offset = vec3::scale(dir, (r_km + 2.0) / KM_PER_M);
+        assert!(w.land(pref, offset));
+        w.status = kerr::world::PilotStatus::Free;
+        let t = w.telemetry().planet.expect("planet telemetry");
+        let h = altitude(&w);
+        assert!((h - t.altitude_km * 1000.0).abs() < 0.01 && (h - 2000.0).abs() < 1.0, "flying: {h} m vs {t:?}");
     }
 }

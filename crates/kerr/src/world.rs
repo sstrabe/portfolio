@@ -291,8 +291,8 @@ pub enum Reference {
 #[derive(Clone, Copy, Debug)]
 pub struct Relative {
     pub reference: Reference,
-    /// Coordinate position and velocity relative to the body's centre
-    /// (units of M and c).
+    /// Position and velocity relative to the body's centre (units of M and
+    /// c): in a planet's rest frame, else in simulation coordinates.
     pub offset: V3,
     pub velocity: V3,
     /// The body's `GM` and radius, units of M.
@@ -1091,6 +1091,20 @@ impl World {
                 BodyRef::Star => Reference::Star(l.star),
                 BodyRef::Planet(i) => Reference::Planet(l.planet_ref(i)),
             };
+            if let BodyRef::Planet(i) = body {
+                // Near a surface, lengths in the planet's own frame.
+                let rel = l.planet_relative(i, self.pilot.x);
+                let w = rel.frame.e[0];
+                return Relative {
+                    reference,
+                    offset: rel.pos,
+                    velocity: rel.frame.velocity(&self.kerr, u),
+                    mu,
+                    radius,
+                    ship_velocity: ship_velocity(w),
+                    gamma: gamma(w),
+                };
+            }
             if let Some(w) = self.kerr.four_velocity(pos, vb) {
                 return Relative {
                     reference,
@@ -1343,24 +1357,25 @@ impl World {
         let Some(l) = &self.local else { return };
         let Some(c) = l.contact(from, to) else { return };
         let t = c.x[0];
-        let (centre, vel) = l.body_state(c.body, t);
-        let n = vec3::normalize(vec3::sub(vec3::spatial(c.x), centre));
-        let u = self.pilot.e[0];
-        let v_ship = [u[1] / u[0], u[2] / u[0], u[3] / u[0]];
         match c.body {
             BodyRef::Planet(i) => {
+                // Where it touched, measured in the planet's rest frame.
+                let rel = l.planet_relative(i, c.x);
                 let p = l.planet_ref(i);
                 let (_, radius) = l.planet_mass(i);
                 let planet = l.planet(i).expect("planet");
-                let r = vec3::scale(n, radius + LANDED_HEIGHT_KM / KM_PER_M);
-                let offset = vec3::rotate(r, planet.spin_axis, -planet.rotation(t * SECONDS_PER_M));
-                let (pos, v_surface) = surface(l, i, offset, t);
-                let speed = vec3::norm(vec3::sub(v_ship, v_surface)) * C_KM_S;
-                self.place(t, pos, v_surface);
+                let r = vec3::scale(vec3::normalize(rel.pos), radius + LANDED_HEIGHT_KM / KM_PER_M);
+                let offset = vec3::rotate(r, planet.spin_axis, -planet.rotation(rel.centre[0] * SECONDS_PER_M));
+                let (x, ground) = surface(l, i, offset, t);
+                let v_ship = rel.frame.velocity(&self.kerr, self.pilot.e[0]);
+                let speed = vec3::norm(vec3::sub(v_ship, rel.frame.velocity(&self.kerr, ground))) * C_KM_S;
+                self.place_event(x, ground);
                 self.status = PilotStatus::Landed { planet: p, offset };
                 self.events.push(WorldEvent::Landed { speed });
             }
             BodyRef::Star => {
+                let (centre, vel) = l.body_state(c.body, t);
+                let n = vec3::normalize(vec3::sub(vec3::spatial(c.x), centre));
                 let pos = vec3::axpy(centre, 10.0 * l.star_radius, n);
                 self.place(t, pos, vel);
                 self.status = PilotStatus::Free;
@@ -1376,6 +1391,47 @@ impl World {
         }
     }
 
+    /// Call after moving the pilot by hand (a start position, a test): the
+    /// local star system is picked again at once.
+    pub fn teleported(&mut self) {
+        self.local_until = f64::NEG_INFINITY;
+        self.guesses.iter_mut().for_each(|g| *g = None);
+        self.sync_local();
+        self.update_well();
+    }
+
+    /// Set the ship down on planet `p` at body-fixed `offset` (the
+    /// planet's rest frame, units of M), turning with the ground. False
+    /// when `p`'s system isn't the current one (see [`Self::teleported`]).
+    pub fn land(&mut self, p: PlanetRef, offset: V3) -> bool {
+        let Some((x, ground)) = self.system_of(p).map(|l| surface(l, p.planet, offset, self.pilot.x[0])) else {
+            return false;
+        };
+        self.place_event(x, ground);
+        self.status = PilotStatus::Landed { planet: p, offset };
+        true
+    }
+
+    fn place_event(&mut self, x: V4, u: V4) {
+        self.pilot.x = x;
+        self.pilot.set_velocity(&self.kerr, u);
+    }
+
+    /// Where a landed ship is relative to its planet, straight from the
+    /// body-fixed offset (not from the ship's position in hole-centred
+    /// coordinates, which f64 resolves only to ~3 cm 1000 AU out): the
+    /// planet and the point (rest-frame offset, planet frame; see
+    /// [`Local::planet_point`]).
+    pub fn surface_fix(&self) -> Option<(PlanetRef, local::PlanetPoint)> {
+        let PilotStatus::Landed { planet: p, offset } = self.status else { return None };
+        let l = self.system_of(p)?;
+        let planet = l.planet(p.planet)?;
+        let point = l.planet_point(p.planet, self.pilot.x[0], |tc| {
+            vec3::rotate(offset, planet.spin_axis, planet.rotation(tc * SECONDS_PER_M))
+        });
+        Some((p, point))
+    }
+
     /// Ride on a planet's surface for `dtau`, turning with it.
     fn ride_surface(&mut self, p: PlanetRef, offset: V3, dtau: f64, wall_dt: f64, input: &Input) {
         let Some(l) = self.system_of(p) else {
@@ -1385,15 +1441,15 @@ impl World {
         let planet = l.planet(p.planet).expect("planet");
         let omega = std::f64::consts::TAU / planet.rotation_period_s * SECONDS_PER_M;
         let t = self.pilot.x[0];
-        let (pos, vel) = surface(l, p.planet, offset, t);
-        let ut = self.kerr.four_velocity(pos, vel).map_or(1.0, |u| u[0]);
+        let (_, ground) = surface(l, p.planet, offset, t);
+        let ut = ground[0];
         let t1 = t + ut * dtau;
-        let (pos1, vel1) = surface(l, p.planet, offset, t1);
+        let (x1, ground1) = surface(l, p.planet, offset, t1);
         // The ship's axes turn with the ground, plus the pilot's turning.
         let per_tau = wall_dt / dtau.max(1e-9);
         let turn = vec3::scale(self.pilot.local_components(&self.kerr, planet.spin_axis), omega * ut);
         let spin = vec3::axpy(turn, self.cfg.turn_rate * per_tau, input.turn);
-        self.place(t1, pos1, vel1);
+        self.place_event(x1, ground1);
         self.pilot.tau += dtau;
         self.pilot.rotate(spin, dtau);
         self.cluster.advance_to(t1);
@@ -1412,7 +1468,8 @@ impl World {
         let l = self.system_of(p)?;
         let planet = l.planet(p.planet)?;
         let (mu, radius) = l.planet_mass(p.planet);
-        let (r, v) = self.relative_to(l, p.planet);
+        let rel = l.planet_relative(p.planet, self.pilot.x);
+        let (r, v) = (rel.pos, rel.frame.velocity(&self.kerr, self.pilot.e[0]));
         let d = vec3::norm(r);
         let el = Elements::of(mu, r, v);
         Some(PlanetTelemetry {
@@ -1431,14 +1488,15 @@ impl World {
     }
 }
 
-/// Position and coordinate velocity of the surface point at `offset`
-/// (planet-fixed) of planet `i` at coordinate time `t`.
-fn surface(l: &Local, i: usize, offset: V3, t: f64) -> (V3, V3) {
+/// The event at coordinate time `t` of the body-fixed point `offset`
+/// (planet rest frame, units of M) of planet `i`, and the 4-velocity of the
+/// ground there.
+fn surface(l: &Local, i: usize, offset: V3, t: f64) -> (V4, V4) {
     let planet = l.planet(i).expect("planet");
-    let (xp, vp) = l.planet_state(i, t);
-    let r = vec3::rotate(offset, planet.spin_axis, planet.rotation(t * SECONDS_PER_M));
     let omega = std::f64::consts::TAU / planet.rotation_period_s * SECONDS_PER_M;
-    (vec3::add(xp, r), vec3::axpy(vp, omega, vec3::cross(planet.spin_axis, r)))
+    let point = l.planet_point(i, t, |tc| vec3::rotate(offset, planet.spin_axis, planet.rotation(tc * SECONDS_PER_M)));
+    let ground = vec3::scale(vec3::cross(planet.spin_axis, point.pos), omega);
+    (point.event, point.frame.four_velocity(ground))
 }
 
 /// Radial / along-track / orbit-normal basis of a body, so a docked ship
@@ -1698,7 +1756,10 @@ mod tests {
         w.step(1.0 / 60.0, &input);
         let t0 = w.telemetry().planet.expect("planet telemetry");
         assert!(w.cfg.time_scale < 1e5, "warp not capped: {}", w.cfg.time_scale * SECONDS_PER_M);
-        assert!((t0.altitude_km - 300.0).abs() < 0.1 && t0.apoapsis_km - t0.periapsis_km < 0.1, "{t0:?}");
+        // Telemetry measures in the planet's rest frame; the orbit was set
+        // up circular in simulation coordinates, which differ from it by
+        // ~10⁻⁵ (the metric and the star's motion): ~0.3 km on this orbit.
+        assert!((t0.altitude_km - 300.0).abs() < 0.1 && t0.apoapsis_km - t0.periapsis_km < 0.5, "{t0:?}");
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
         let start = w.pilot.x[0];
         let mut orbits = 0.0;

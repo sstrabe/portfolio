@@ -39,8 +39,14 @@
 //!   terrain relief (the surface is the sphere of the planet's mean radius)
 //!   and the stellar-mass black holes (they are not stars; the ship feels
 //!   only Sgr A*'s geometry near them).
+//! * **Surfaces.** Where the ship is relative to a planet's surface is
+//!   measured in the planet's own rest frame ([`Local::planet_relative`]):
+//!   simulation coordinates differ from it by ~10⁻⁵ (the metric and the
+//!   star's motion), ~100 m across an Earth. The renderer uses the same
+//!   functions, so what the physics calls the ground is where it's drawn.
 
 use crate::cluster::{BodyKind, Cluster};
+use crate::frame::LocalFrame;
 use crate::geodesic;
 use crate::metric::Kerr;
 use crate::pilot::Field;
@@ -156,6 +162,7 @@ struct Mass {
 /// the snapshot time and its planets.
 #[derive(Clone, Debug)]
 pub struct Local {
+    kerr: Kerr,
     pub star: usize,
     pub generation: u32,
     /// The star's planets, if it has any.
@@ -234,6 +241,7 @@ impl Local {
         let v0 = geodesic::coordinate_velocity(k, &s);
         let a0 = vec3::add(geodesic_acceleration(k, &s), b.pert);
         let mut local = Self {
+            kerr: *k,
             star,
             generation: b.generation,
             system,
@@ -295,6 +303,67 @@ impl Local {
         let (xs, vs) = self.star_state(t);
         let (off, vel) = self.system.as_ref().expect("planets").planet_state(i, t);
         (vec3::axpy(xs, 1.0 / KM_PER_M, off), vec3::axpy(vs, 1.0 / C_KM_S, vel))
+    }
+
+    /// Planet `i`'s centre event and 4-velocity at coordinate time `t`.
+    pub fn planet_worldline(&self, i: usize, t: f64) -> (V4, V4) {
+        let (x, v) = self.planet_state(i, t);
+        let u = self.kerr.four_velocity(x, v).expect("planets move slower than light");
+        ([t, x[0], x[1], x[2]], u)
+    }
+
+    /// Where event `x` is relative to planet `i`, in the planet's rest
+    /// frame: its position (proper length, units of M, axes along the
+    /// simulation's), the planet-centre event simultaneous with it there,
+    /// and that frame.
+    pub fn planet_relative(&self, i: usize, x: V4) -> PlanetRelative {
+        let mut t = x[0];
+        let mut out = self.relative_at(i, x, t);
+        for _ in 0..6 {
+            // Rest-frame time of `x` after the centre event: move the centre
+            // on by as much proper time.
+            if out.dt.abs() < 1e-15 {
+                break;
+            }
+            t += out.dt * out.u[0];
+            out = self.relative_at(i, x, t);
+        }
+        PlanetRelative { pos: out.pos, centre: out.centre, frame: out.frame }
+    }
+
+    fn relative_at(&self, i: usize, x: V4, t: f64) -> RelativeAt {
+        let (centre, u) = self.planet_worldline(i, t);
+        let frame = LocalFrame::new(&self.kerr, vec3::spatial(centre), u);
+        let d: V4 = std::array::from_fn(|m| x[m] - centre[m]);
+        let (dt, pos) = frame.components(&self.kerr, d);
+        RelativeAt { dt, pos, centre, u, frame }
+    }
+
+    /// Inverse of [`Self::planet_relative`]: the event at coordinate time
+    /// `t` whose rest-frame offset from planet `i`'s centre is `offset(tc)`,
+    /// where `tc` is the coordinate time of the simultaneous centre event
+    /// (so a body-fixed point can be rotated to the right angle), with the
+    /// planet frame.
+    pub fn planet_point(&self, i: usize, t: f64, offset: impl Fn(f64) -> V3) -> PlanetPoint {
+        let mut tc = t;
+        let mut point = self.point_at(i, tc, offset(tc));
+        for _ in 0..6 {
+            let err = point.event[0] - t;
+            if err.abs() < 1e-15 * t.abs().max(1.0) {
+                break;
+            }
+            tc -= err;
+            point = self.point_at(i, tc, offset(tc));
+        }
+        point.event[0] = t;
+        point
+    }
+
+    fn point_at(&self, i: usize, tc: f64, r: V3) -> PlanetPoint {
+        let (centre, u) = self.planet_worldline(i, tc);
+        let frame = LocalFrame::new(&self.kerr, vec3::spatial(centre), u);
+        let d = frame.displacement(0.0, r);
+        PlanetPoint { event: std::array::from_fn(|m| centre[m] + d[m]), pos: r, centre, frame }
     }
 
     /// Position and coordinate velocity of a body at `t`.
@@ -370,15 +439,27 @@ impl Local {
     }
 
     /// Where the straight path from event `x0` to `x1` first touches a
-    /// body (relative motion is linear over the path), if it does.
+    /// body (relative motion is linear over the path), if it does. Planets
+    /// are spheres in their own rest frames.
     pub fn contact(&self, x0: V4, x1: V4) -> Option<Contact> {
         let (p0, p1) = (vec3::spatial(x0), vec3::spatial(x1));
         let mut best: Option<(f64, BodyRef)> = None;
         let bodies = std::iter::once(BodyRef::Star).chain((0..self.planets.len()).map(BodyRef::Planet));
         for body in bodies {
             let radius = self.mass_of(body).1;
-            let a = vec3::sub(p0, self.body_state(body, x0[0]).0);
-            let b = vec3::sub(p1, self.body_state(body, x1[0]).0);
+            let (a, b) = match body {
+                BodyRef::Star => {
+                    (vec3::sub(p0, self.body_state(body, x0[0]).0), vec3::sub(p1, self.body_state(body, x1[0]).0))
+                }
+                BodyRef::Planet(i) => {
+                    // Cheap reject before the rest-frame transformation.
+                    let near = vec3::norm(vec3::sub(p0, self.planet_state(i, x0[0]).0)) - vec3::norm(vec3::sub(p1, p0));
+                    if near > 1.01 * radius {
+                        continue;
+                    }
+                    (self.planet_relative(i, x0).pos, self.planet_relative(i, x1).pos)
+                }
+            };
             let Some(s) = segment_enters_sphere(a, b, radius) else { continue };
             if best.is_none_or(|(s0, _)| s < s0) {
                 best = Some((s, body));
@@ -386,6 +467,34 @@ impl Local {
         }
         best.map(|(s, body)| Contact { body, x: std::array::from_fn(|m| x0[m] + s * (x1[m] - x0[m])) })
     }
+}
+
+/// An event relative to a planet, in the planet's rest frame.
+#[derive(Clone, Copy, Debug)]
+pub struct PlanetRelative {
+    /// Position relative to the centre (proper length, units of M).
+    pub pos: V3,
+    /// The centre event simultaneous with it in the planet's frame.
+    pub centre: V4,
+    pub frame: LocalFrame,
+}
+
+/// A point given relative to a planet, and where that is.
+#[derive(Clone, Copy, Debug)]
+pub struct PlanetPoint {
+    pub event: V4,
+    /// Rest-frame offset from the centre (units of M).
+    pub pos: V3,
+    pub centre: V4,
+    pub frame: LocalFrame,
+}
+
+struct RelativeAt {
+    dt: f64,
+    pos: V3,
+    centre: V4,
+    u: V4,
+    frame: LocalFrame,
 }
 
 /// Fraction along `a → b` where the segment first reaches distance
