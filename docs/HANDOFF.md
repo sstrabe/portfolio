@@ -253,6 +253,24 @@ march). The post chain is ~2 ms.
    (`escape_dirs`/`footprint` in `trace.wgsl`), exposure metering or TAA
    of the lensed sky. First step: reproduce headless near the hole
    (`--near-hole`), toggle `KERR_NEBULAE`/`KERR_NEBULA_CUBE`, and diff.
+14. **To do (owner, 2026-09-25): the chase camera clips into the ground.**
+   It goes into the terrain and under it. Fix: keep the orbit's camera
+   position a clearance above the ground, using the physics ground
+   (`GroundCache::height_km` at the camera's direction) or a terrain ray
+   from the orbit centre towards the camera (the RT path's
+   `TerrainAccel::cast`), shortening the distance where it hits.
+15. **Bug (owner, 2026-09-25): the orbited planet sometimes vanishes from
+   the map view**; you see straight through it. Not yet reproduced.
+   Suspects: the map's planet draw losing the selected planet when the
+   near-field selection changes (`near.rs` `SelectedPlanet`), or a
+   precision or culling issue in the map's planet sphere.
+16. **Bug (owner, 2026-09-25): in the chase view, a planet only partly on
+   screen (just off the edge) sends the exposure haywire, and the planet
+   turns into a star-like point.** Suspects: exposure metering reading a
+   tiny bright patch, or the near/far hand-off treating a planet whose
+   centre is off screen as sub-pixel (the far field's point-source path)
+   while its disc is still partly visible. First step: reproduce headless
+   with the planet's centre just outside the frame.
 
 ---
 
