@@ -167,13 +167,18 @@ fn planet_trace(sys: StarSystem, p: Planet, d: vec3<f32>, sigma_max: f32, fp: f3
 
     let surf = planet_surface_hit(p, o, dir, u_max, fp, scale);
     let u_end = select(u_max, surf.u, surf.hit);
+    let atmo = atmo_segment(p, o, dir, u_end, surf.hit, sun, fp);
     var back = medium_clear();
     if (surf.hit) {
-        back = Medium(planet_surface_radiance(p, surf, -dir, sun), spec(0.0));
+        // Under an opaque cloud deck the surface isn't seen: skip shading it.
+        var surf_l = spec(0.0);
+        if (spec_max_value(atmo.T) > 1e-4) {
+            surf_l = planet_surface_radiance(p, surf, -dir, sun);
+        }
+        back = Medium(surf_l, spec(0.0));
         out.opaque = true;
         out.sigma = surf.u / scale;
     }
-    let atmo = atmo_segment(p, o, dir, u_end, surf.hit, sun, fp);
     var m = medium_over(atmo, back);
     let ring = planet_rings(p, o, dir, u_end, sun, scale);
     if (ring.hit) {

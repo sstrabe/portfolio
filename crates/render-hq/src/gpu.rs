@@ -77,6 +77,17 @@ pub struct Gpu {
 
     hdr: Option<Hdr>,
     capture: Arc<Mutex<Capture>>,
+    timing: Option<TraceTiming>,
+}
+
+/// GPU timestamps around the trace pass (profiling aid).
+struct TraceTiming {
+    queries: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    /// Trace pass durations, ms.
+    samples: Arc<Mutex<Vec<f64>>>,
+    /// Nanoseconds per timestamp tick.
+    period: f32,
 }
 
 fn offscreen_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
@@ -139,7 +150,7 @@ impl Gpu {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("kerr hq"),
-                required_features: REQUIRED_FEATURES,
+                required_features: REQUIRED_FEATURES | (adapter.features() & wgpu::Features::TIMESTAMP_QUERY),
                 required_limits: limits,
                 ..Default::default()
             })
@@ -265,6 +276,7 @@ impl Gpu {
             bodies,
         );
 
+        let _ = 0;
         Ok(Self {
             _instance: instance,
             device,
@@ -292,7 +304,36 @@ impl Gpu {
             post,
             hdr: None,
             capture: Arc::default(),
+            timing: None,
         })
+    }
+
+    /// Local profiling aid: time the trace pass (KERR_GPU_TIMING=1).
+    pub fn enable_timing(&mut self) {
+        if !self.device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            return;
+        }
+        let qs = self.device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: None,
+            ty: wgpu::QueryType::Timestamp,
+            count: 2,
+        });
+        let resolve = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 16,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        self.timing = Some(TraceTiming {
+            queries: qs,
+            resolve,
+            samples: Arc::default(),
+            period: self.queue.get_timestamp_period(),
+        });
+    }
+
+    pub fn trace_times(&self) -> Vec<f64> {
+        self.timing.as_ref().map(|t| t.samples.lock().unwrap().clone()).unwrap_or_default()
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -466,8 +507,14 @@ impl Gpu {
             pass.dispatch_workgroups((self.bodies * 2).div_ceil(64), 1, 1);
         }
         {
-            let mut pass =
-                enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("trace"), timestamp_writes: None });
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("trace"),
+                timestamp_writes: self.timing.as_ref().map(|t| wgpu::ComputePassTimestampWrites {
+                    query_set: &t.queries,
+                    beginning_of_pass_write_index: Some(0),
+                    end_of_pass_write_index: Some(1),
+                }),
+            });
             pass.set_pipeline(&self.trace_pipeline);
             pass.set_bind_group(0, &hdr.core_bg, &[]);
             pass.set_bind_group(1, self.near.bind_group(), &[]);
@@ -476,6 +523,27 @@ impl Gpu {
             pass.set_bind_group(4, self.ship.bind_group(), &[]);
             pass.set_bind_group(5, self.lens.bind_group(), &[]);
             pass.dispatch_workgroups(w.div_ceil(TRACE_TILE), h.div_ceil(TRACE_TILE), 1);
+        }
+        if let Some(TraceTiming { queries: qs, resolve, samples, period }) = &self.timing {
+            enc.resolve_query_set(qs, 0..2, resolve, 0);
+            let read = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 16,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            enc.copy_buffer_to_buffer(resolve, 0, &read, 0, 16);
+            let (samples, period, r2) = (samples.clone(), *period, read.clone());
+            enc.map_buffer_on_submit(&read, wgpu::MapMode::Read, .., move |res| {
+                if res.is_ok() {
+                    if let Ok(d) = r2.slice(..).get_mapped_range() {
+                        let t0 = u64::from_le_bytes(d[0..8].try_into().unwrap());
+                        let t1 = u64::from_le_bytes(d[8..16].try_into().unwrap());
+                        samples.lock().unwrap().push(t1.wrapping_sub(t0) as f64 * period as f64 * 1e-6);
+                    }
+                    r2.unmap();
+                }
+            });
         }
         self.post.encode(&mut enc, &hdr.view, &out_view);
         self.encode_capture(&mut enc);

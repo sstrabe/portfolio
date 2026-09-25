@@ -26,13 +26,25 @@ pub fn trace() -> String {
     assemble(&[wgsl!(
         "near.wgsl",
         "planet.wgsl",
+        "atmo_common.wgsl",
         "atmosphere.wgsl",
+        "clouds.wgsl",
         "nebula.wgsl",
         "ship.wgsl",
         "lens.wgsl",
         "far.wgsl",
         "trace.wgsl"
     )])
+}
+
+/// Atmosphere lookup tables and cloud textures (entry points in
+/// `atmo_luts.wgsl` and `cloud_gen.wgsl`). Built on the Kerr prelude alone:
+/// these passes bind their own resources in group 0.
+pub fn atmosphere_tables() -> String {
+    let mut s = String::from(::shaders::COMMON);
+    s.push('\n');
+    s.push_str(wgsl!("spectrum.wgsl", "atmo_common.wgsl", "atmo_luts.wgsl", "cloud_gen.wgsl"));
+    s
 }
 
 /// Point sources splatted into the HDR radiance.
@@ -45,8 +57,8 @@ pub fn post() -> String {
     assemble(&[wgsl!("post.wgsl")])
 }
 
-pub fn all() -> [(&'static str, String); 3] {
-    [("trace", trace()), ("splat", splat()), ("post", post())]
+pub fn all() -> [(&'static str, String); 4] {
+    [("trace", trace()), ("splat", splat()), ("post", post()), ("atmosphere tables", atmosphere_tables())]
 }
 
 #[cfg(test)]
