@@ -461,6 +461,9 @@ impl Gpu {
 
     /// Pick the near field for this frame (before building `HqUniforms`).
     pub fn update_near(&mut self, world: &World, view: &kerr::pilot::Tetrad, pixel_angle: f64) {
+        // The chase camera's offset from the pilot, in the view axes (km).
+        let pose = self.ship.camera.pose();
+        self.near.set_camera(pose.axes.map(|a| kerr::vec3::dot(pose.pos, a) * 1e-3));
         self.near.update(&self.device, &self.queue, world, view, pixel_angle, self.post.profiler());
     }
 

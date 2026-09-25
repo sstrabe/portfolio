@@ -270,6 +270,9 @@ pub struct NearField {
     pub terrain: crate::terrain::field::TerrainField,
     /// Where the tiles are relative to the pilot (`terrain_rq.wgsl`).
     terrain_view: wgpu::Buffer,
+    /// The camera's place relative to the pilot, in the view axes (km): the
+    /// terrain is traced from the chase camera, not from inside the ship.
+    camera_km: V3,
 }
 
 /// Mirrors `struct TerrainView` in `terrain_rq.wgsl`.
@@ -416,7 +419,17 @@ impl NearField {
             layout: &layout,
             entries: &entries,
         });
-        Self { layout, bind_group, systems, planets, terrain_view, selection: Selection::default(), maps, terrain }
+        Self {
+            layout,
+            bind_group,
+            systems,
+            planets,
+            terrain_view,
+            camera_km: [0.0; 3],
+            selection: Selection::default(),
+            maps,
+            terrain,
+        }
     }
 
     /// Where the tiles are for the trace, for a pilot at `eye` (body-fixed
@@ -443,7 +456,18 @@ impl NearField {
             let sys = &self.selection.systems[p.system].system;
             (sys.star, sys.generation, p.index) == key
         })?;
-        Some((p.body_axes, p.pilot_body_km()))
+        Some((p.body_axes, self.eye_body_km(p)))
+    }
+
+    /// Set where the camera is relative to the pilot, in the view axes (km),
+    /// before `update`.
+    pub fn set_camera(&mut self, camera_km: V3) {
+        self.camera_km = camera_km;
+    }
+
+    /// The camera's body-fixed position on planet `p` (km from its centre).
+    fn eye_body_km(&self, p: &SelectedPlanet) -> V3 {
+        vec3::add(p.pilot_body_km(), crate::terrain::to_body(&p.body_axes, self.camera_km))
     }
 
     pub fn layout(&self) -> &wgpu::BindGroupLayout {
@@ -495,7 +519,7 @@ impl NearField {
             })
         {
             let planet = p.planet(&self.selection).clone();
-            let eye = p.pilot_body_km();
+            let eye = self.eye_body_km(p);
             self.terrain.update(device, queue, (key, &planet), eye, pixel_angle, profiler);
             view = self.terrain_view(&planet, eye, p.gpu.ids[3]);
         }
