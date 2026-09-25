@@ -250,7 +250,13 @@ pub struct NearField {
     systems: wgpu::Buffer,
     planets: wgpu::Buffer,
     pub selection: Selection,
+    /// Baked maps (climate) of the nearest solid world with air.
+    pub maps: crate::terrain::maps::SurfaceMaps,
 }
+
+/// Maps are baked for a solid world with air once the pilot is within this
+/// many of its radii.
+const MAPS_RANGE_RADII: f64 = 50.0;
 
 impl NearField {
     pub fn new(device: &wgpu::Device) -> Self {
@@ -266,8 +272,28 @@ impl NearField {
         };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("near field"),
-            entries: &[storage(0), storage(1)],
+            entries: &[
+                storage(0),
+                storage(1),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
+        let maps = crate::terrain::maps::SurfaceMaps::new(device);
         let buffer = |label, size| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -284,9 +310,11 @@ impl NearField {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: systems.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: planets.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&maps.climate_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&maps.sampler) },
             ],
         });
-        Self { layout, bind_group, systems, planets, selection: Selection::default() }
+        Self { layout, bind_group, systems, planets, selection: Selection::default(), maps }
     }
 
     pub fn layout(&self) -> &wgpu::BindGroupLayout {
@@ -297,10 +325,49 @@ impl NearField {
         &self.bind_group
     }
 
-    pub fn update(&mut self, queue: &wgpu::Queue, world: &World, e: &kerr::pilot::Tetrad, pixel_angle: f64) {
+    pub fn update(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        world: &World,
+        e: &kerr::pilot::Tetrad,
+        pixel_angle: f64,
+    ) {
         self.selection = select(world, e, pixel_angle);
+        // Bake the maps of the nearest solid world with air in range, once.
+        let nearest = self
+            .selection
+            .planets
+            .iter()
+            .filter(|p| {
+                let planet = p.planet(&self.selection);
+                !planet.kind.is_giant()
+                    && planet.atmosphere.is_some()
+                    && p.distance_km < MAPS_RANGE_RADII * planet.radius_km
+            })
+            .min_by(|a, b| a.distance_km.total_cmp(&b.distance_km))
+            .map(|p| {
+                let sys = &self.selection.systems[p.system].system;
+                ((sys.star, sys.generation, p.index), p.planet(&self.selection).clone())
+            });
+        if let Some((key, planet)) = nearest
+            && self.maps.baked != Some(key)
+        {
+            self.maps.bake(device, queue, key, &planet);
+        }
+        let baked = self.maps.baked;
         let systems: Vec<SystemGpu> = self.selection.systems.iter().map(|s| s.gpu).collect();
-        let planets: Vec<PlanetGpu> = self.selection.planets.iter().map(|p| p.gpu).collect();
+        let planets: Vec<PlanetGpu> = self
+            .selection
+            .planets
+            .iter()
+            .map(|p| {
+                let sys = &self.selection.systems[p.system].system;
+                let mut gpu = p.gpu;
+                gpu.detail[1] = if baked == Some((sys.star, sys.generation, p.index)) { 1.0 } else { 0.0 };
+                gpu
+            })
+            .collect();
         if !systems.is_empty() {
             queue.write_buffer(&self.systems, 0, bytemuck::cast_slice(&systems));
         }

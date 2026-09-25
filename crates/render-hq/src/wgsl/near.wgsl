@@ -33,7 +33,7 @@ struct Planet {
     surface: vec4<f32>, // relief (km), sea level (fraction of relief), equilibrium temperature (K), atmosphere top (km, 0: none)
     rings: vec4<f32>,   // inner radius (km), outer radius (km), optical depth (0: none), dust fraction
     ids: vec4<u32>,     // kind (PlanetKind), seed, system slot, own slot
-    detail: vec4<f32>,  // surface wind speed (m/s), unused, unused, unused
+    detail: vec4<f32>,  // surface wind speed (m/s), 1 when the baked maps are this planet's, unused, unused
 }
 
 @group(1) @binding(0) var<storage, read> systems: array<StarSystem>;

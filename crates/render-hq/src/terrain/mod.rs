@@ -6,6 +6,7 @@
 //! that could drift from what is drawn.
 
 pub mod cube;
+pub mod maps;
 pub mod probe;
 
 use kerr::vec3::{self, V3};

@@ -27,7 +27,9 @@ pub fn trace(rt: bool) -> String {
     let body = assemble(&[
         wgsl!(
             "near.wgsl",
+            "cube.wgsl",
             "terrain.wgsl",
+            "maps.wgsl",
             "planet.wgsl",
             "atmo_common.wgsl",
             "atmosphere.wgsl",
@@ -114,8 +116,18 @@ pub fn probe() -> String {
     s
 }
 
-pub fn all() -> [(&'static str, String); 13] {
+/// The climate bake (`terrain/maps.rs`). Built on the Kerr prelude
+/// alone, binding its own resources in group 0.
+pub fn climate() -> String {
+    let mut s = String::from(::shaders::COMMON);
+    s.push('\n');
+    s.push_str(wgsl!("cube.wgsl", "terrain.wgsl", "climate.wgsl"));
+    s
+}
+
+pub fn all() -> [(&'static str, String); 14] {
     [
+        ("climate", climate()),
         ("probe", probe()),
         ("overlay", overlay()),
         ("trace", trace(false)),

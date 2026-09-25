@@ -236,13 +236,18 @@ fn surface_temperature(tp: TerrainParams, q: vec3<f32>, h: f32) -> f32 {
     return t - 6.5 * max(h, 0.0) * tp.air;
 }
 
-fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>) -> Material {
+fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, baked: bool) -> Material {
     var mat: Material;
     mat.emission = spec(0.0);
     // Weather and currents make the ice and snow lines ragged: a few K of
     // noise on the temperature.
     let wobble = 6.0 * tn_fbm(q * 9.0, tp.seed + 41u, 4.0, 0.55);
-    let temp = surface_temperature(tp, q, h) + wobble;
+    // The baked climate (winds, rain shadows) when this planet has it.
+    var climate = vec4<f32>(0.0);
+    if (baked) {
+        climate = map_climate(q);
+    }
+    let temp = select(surface_temperature(tp, q, h), climate.x - 6.5 * max(h - max(m.x, 0.0), 0.0) * tp.air, baked) + wobble;
     if (h < 0.0) {
         // Pack ice below about −2 °C, broken into floes near its edge.
         let floes = tn_fbm(q * 60.0, tp.seed + 43u, 3.0, 0.6);
@@ -258,8 +263,13 @@ fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>) -
     let rock = spec_mix(refl_granite(), refl_basalt(), m.w);
     // Vegetation where it is warm and wet; bare rock high in the ranges;
     // desert where dry; snow where cold.
-    let veg_w = smoothstep(0.1, 0.4, moist) * smoothstep(266.0, 280.0, temp) * (1.0 - smoothstep(0.6, 0.95, m.y));
-    let dryness = 1.0 - smoothstep(0.3, 0.7, moist);
+    var veg_w = smoothstep(0.1, 0.4, moist) * smoothstep(266.0, 280.0, temp) * (1.0 - smoothstep(0.6, 0.95, m.y));
+    var dryness = 1.0 - smoothstep(0.3, 0.7, moist);
+    if (baked) {
+        // Vegetation from the climate: none on the highest, rockiest ranges.
+        veg_w = climate.z * smoothstep(262.0, 272.0, temp) * (1.0 - smoothstep(0.6, 0.95, m.y));
+        dryness = climate.w;
+    }
     var a = spec_mix(refl_ferric(0.3), rock, smoothstep(0.3, 0.7, m.y));
     a = spec_mix(a, refl_vegetation(dryness), veg_w);
     let snow = smoothstep(271.0, 262.0, temp + 3.0 * (moist - 0.5));
@@ -325,9 +335,9 @@ fn material_rocky(tp: TerrainParams, h: f32, m: vec4<f32>) -> Material {
     return mat;
 }
 
-fn planet_material(tp: TerrainParams, hit: SurfaceHit) -> Material {
+fn planet_material(tp: TerrainParams, hit: SurfaceHit, baked: bool) -> Material {
     switch (tp.kind) {
-        case KIND_OCEAN: { return material_ocean_world(tp, hit.body, hit.height, hit.terrain); }
+        case KIND_OCEAN: { return material_ocean_world(tp, hit.body, hit.height, hit.terrain, baked); }
         case KIND_DESERT: { return material_desert(hit.body, hit.terrain); }
         case KIND_ICE: { return material_ice(hit.terrain); }
         case KIND_LAVA: { return material_lava(tp, hit.height, hit.terrain); }
@@ -420,7 +430,7 @@ fn planet_surface_radiance(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLi
         return spec_mul(a, spec_add(spec_scale(e_sun, minnaert / PI), spec_scale(e_sky, 1.0 / PI)));
     }
     let tp = planet_terrain(p);
-    let mat = planet_material(tp, h);
+    let mat = planet_material(tp, h, p.detail.y > 0.5);
     if (mat.water) {
         let mu0 = max(dot(up, sun.dir), 0.0);
         let f_sun = fresnel_water(mu0);
