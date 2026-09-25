@@ -154,16 +154,34 @@ impl Gpu {
         } else {
             wgpu::Features::empty()
         };
+        // Hardware ray tracing (RT cores) when the GPU has it, unless
+        // KERR_RT=0 asks for the software paths.
+        let rt = std::env::var("KERR_RT").map_or(true, |v| v != "0")
+            && adapter.features().contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY);
+        let (rt_features, limits) = if rt {
+            (wgpu::Features::EXPERIMENTAL_RAY_QUERY, limits.using_acceleration_structure_values(supported.clone()))
+        } else {
+            (wgpu::Features::empty(), limits)
+        };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("kerr hq"),
-                required_features: REQUIRED_FEATURES | timing,
+                required_features: REQUIRED_FEATURES | timing | rt_features,
                 required_limits: limits,
+                // SAFETY: wgpu marks ray queries experimental; they are
+                // only requested when the adapter offers them, and
+                // KERR_RT=0 turns them off.
+                experimental_features: if rt {
+                    unsafe { wgpu::ExperimentalFeatures::enabled() }
+                } else {
+                    wgpu::ExperimentalFeatures::disabled()
+                },
                 ..Default::default()
             })
             .await
             .map_err(|e| format!("device: {e}"))?;
         device.on_uncaptured_error(Arc::new(|e: wgpu::Error| eprintln!("GPU: {e}")));
+        eprintln!("ray tracing: {}", if rt { "hardware ray queries" } else { "software" });
 
         let output = match surface {
             Some(surface) => {
@@ -256,7 +274,7 @@ impl Gpu {
         let near = NearField::new(&device);
         let atmo = Atmospheres::new(&device, &queue);
         let nebula = Nebulae::new(&device, &queue, &frame_buf);
-        let ship = Ship::new(&device, &queue);
+        let ship = Ship::new(&device, &queue, rt);
         let lens = Lensing::new(&device);
         let trace_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("trace"),
@@ -270,7 +288,7 @@ impl Gpu {
             ],
             immediate_size: 0,
         });
-        let trace_mod = module("trace", &shaders::trace());
+        let trace_mod = module("trace", &shaders::trace(rt));
         let trace_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("trace"),
             layout: Some(&trace_layout),

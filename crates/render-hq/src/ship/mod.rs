@@ -78,6 +78,9 @@ pub struct Ship {
     wanted: Vec<f64>,
     firing: Vec<f64>,
     last_wall: Option<f64>,
+    /// The mesh in the ray-tracing hardware's acceleration structures, kept
+    /// alive while the bind group uses them (with ray queries only).
+    _accel: Option<(wgpu::Blas, wgpu::Tlas)>,
 }
 
 fn spectrum_rows(s: [f64; spectrum::BINS]) -> [[f32; 4]; 4] {
@@ -89,7 +92,9 @@ fn f4(v: V3, w: f64) -> [f32; 4] {
 }
 
 impl Ship {
-    pub fn new(device: &wgpu::Device, _queue: &wgpu::Queue) -> Self {
+    /// With `rt`, the mesh also goes into a BLAS in a one-instance TLAS
+    /// for hardware ray queries (`ship_rq.wgsl`).
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, rt: bool) -> Self {
         let (mesh, bvh) = mesh::ship();
         let storage = |binding| wgpu::BindGroupLayoutEntry {
             binding,
@@ -101,24 +106,31 @@ impl Ship {
             },
             count: None,
         };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("ship"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
+        let mut entries = vec![
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
                 },
-                storage(1),
-                storage(2),
-                storage(3),
-            ],
-        });
+                count: None,
+            },
+            storage(1),
+            storage(2),
+            storage(3),
+        ];
+        if rt {
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::AccelerationStructure { vertex_return: false },
+                count: None,
+            });
+        }
+        let layout = device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("ship"), entries: &entries });
         let init = |label, contents: &[u8], usage| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
         };
@@ -127,18 +139,28 @@ impl Ship {
             bytemuck::bytes_of(&ShipFrameGpu::zeroed()),
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
-        let vertices = init("ship vertices", bytemuck::cast_slice(&mesh.vertices), wgpu::BufferUsages::STORAGE);
-        let triangles = init("ship triangles", bytemuck::cast_slice(&mesh.triangles), wgpu::BufferUsages::STORAGE);
+        let mesh_usage =
+            if rt { wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::BLAS_INPUT } else { wgpu::BufferUsages::STORAGE };
+        let vertices = init("ship vertices", bytemuck::cast_slice(&mesh.vertices), mesh_usage);
+        let triangles = init("ship triangles", bytemuck::cast_slice(&mesh.triangles), mesh_usage);
         let nodes = init("ship bvh", bytemuck::cast_slice(&bvh.gpu_nodes()), wgpu::BufferUsages::STORAGE);
+        let accel = rt.then(|| build_acceleration(device, queue, &vertices, &triangles, &mesh));
+        let mut entries = vec![
+            wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: vertices.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: triangles.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: nodes.as_entire_binding() },
+        ];
+        if let Some((_, tlas)) = &accel {
+            entries.push(wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::AccelerationStructure(tlas),
+            });
+        }
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ship"),
             layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: vertices.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: triangles.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: nodes.as_entire_binding() },
-            ],
+            entries: &entries,
         });
         let nozzles = mesh::rcs_nozzles();
         let torques = unit_torques(&nozzles);
@@ -155,6 +177,7 @@ impl Ship {
             wanted: vec![0.0; n],
             firing: vec![0.0; n],
             last_wall: None,
+            _accel: accel,
         }
     }
 
@@ -253,6 +276,59 @@ impl Ship {
     }
 
     pub fn encode(&mut self, _enc: &mut wgpu::CommandEncoder, _ctx: &FrameContext) {}
+}
+
+/// The ship's mesh as a BLAS (positions are the first 12 bytes of each
+/// 32-byte vertex) in a TLAS with one instance at the identity, built now.
+fn build_acceleration(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    vertices: &wgpu::Buffer,
+    triangles: &wgpu::Buffer,
+    mesh: &mesh::Mesh,
+) -> (wgpu::Blas, wgpu::Tlas) {
+    let size = wgpu::BlasTriangleGeometrySizeDescriptor {
+        vertex_format: wgpu::VertexFormat::Float32x3,
+        vertex_count: mesh.vertices.len() as u32,
+        index_format: Some(wgpu::IndexFormat::Uint32),
+        index_count: Some(3 * mesh.triangles.len() as u32),
+        flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
+    };
+    let blas = device.create_blas(
+        &wgpu::CreateBlasDescriptor {
+            label: Some("ship"),
+            flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+        },
+        wgpu::BlasGeometrySizeDescriptors::Triangles { descriptors: vec![size.clone()] },
+    );
+    let mut tlas = device.create_tlas(&wgpu::CreateTlasDescriptor {
+        label: Some("ship"),
+        max_instances: 1,
+        flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+        update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+    });
+    let identity = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    tlas[0] = Some(wgpu::TlasInstance::new(&blas, identity, 0, 0xff));
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("ship acceleration") });
+    enc.build_acceleration_structures(
+        [&wgpu::BlasBuildEntry {
+            blas: &blas,
+            geometry: wgpu::BlasGeometries::TriangleGeometries(vec![wgpu::BlasTriangleGeometry {
+                size: &size,
+                vertex_buffer: vertices,
+                first_vertex: 0,
+                vertex_stride: std::mem::size_of::<mesh::Vertex>() as u64,
+                index_buffer: Some(triangles),
+                first_index: Some(0),
+                transform_buffer: None,
+                transform_buffer_offset: None,
+            }]),
+        }],
+        [&tlas],
+    );
+    queue.submit([enc.finish()]);
+    (blas, tlas)
 }
 
 /// Direction of each nozzle's torque about the centre of mass, or zero for

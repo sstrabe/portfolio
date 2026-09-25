@@ -124,7 +124,7 @@ cargo test --workspace --release
   world around a Sun-like star.
 - Environment: `KERR_GPU_TIMING=1` (per-pass GPU times after a headless run),
   `KERR_DEBUG_NAN=1`, `KERR_ATMO=off|noclouds`, `KERR_NEBULAE=0`,
-  `KERR_NEBULA_CUBE=0`, `WGPU_BACKEND=vulkan|dx12`.
+  `KERR_NEBULA_CUBE=0`, `KERR_RT=0` (no hardware ray tracing), `WGPU_BACKEND=vulkan|dx12`.
 - Keys: KSP-style flight controls, listed by `F1` in the window, `--help`
   and the README (`W`/`S` pitch, `A`/`D` yaw, `Q`/`E` roll, `T` SAS and
   `1`–`9` its hold modes, `Shift`/`Ctrl`/`Z`/`X` throttle, `[`/`]` thrust
@@ -226,7 +226,7 @@ yards", and a detailed design followed (`docs/planets.md`). Status:
 | Stellar-mass hole lensing | done |
 | KSP-style controls, HUD with navball, map view (`render-hq/src/overlay.rs` draws both) | done |
 | Targets: planets or Sgr A* (`world::Target`); orbit autopilot to either (hole: 50 M, static-observer frame) | done |
-| **High-fidelity terrain** (plan: walkable cm-level ground, Earth-like worlds with continents and biomes, first showcase a sunny Hawaii-like beach; RT cores first, raster fallback) | Phase 0 done: one planet frame for physics and rendering (`kerr::frame`, `Local::planet_relative`/`planet_point`; landed and drawn altitude agree to 1 cm), the GPU terrain probe (`render_hq::terrain::probe`), ground starts. Next: 0b RT plumbing on the ship, then 1 surface maps (continents, hotspot islands, erosion, climate, biomes). |
+| **High-fidelity terrain** (plan: walkable cm-level ground, Earth-like worlds with continents and biomes, first showcase a sunny Hawaii-like beach; RT cores first, raster fallback) | Phase 0 done: one planet frame for physics and rendering (`kerr::frame`, `Local::planet_relative`/`planet_point`; landed and drawn altitude agree to 1 cm), the GPU terrain probe (`render_hq::terrain::probe`), ground starts. Phase 0b done: hardware ray queries (RT cores) when the adapter has them (`KERR_RT=0` for software); the ship is a BLAS in a TLAS (`ship_rq.wgsl`), pixel-identical to the software BVH (`ship_bvh.wgsl`). Next: phase 1 surface maps (continents, hotspot islands, erosion, climate, biomes). The plan is in the session's plan file; phases: 1 maps, 2 tile pyramid + precision anchor, 3 RT terrain, 4 shadows/sky/reflections, 4b raster fallback, 5 erosion + cm materials, 6 coastal water, 7 vegetation, 8 walking, 9 polish. |
 | RCS: 32 nozzles in the mesh, firing from the commanded angular acceleration and translation (`Ship::set_rcs`), plumes traced in `ship.wgsl`; SAS buttons by the navball | done |
 | RT-core terrain and ship, surface maps, 200–1600 nm atmosphere tables, presets (Mars, Venus, Titan, Jupiter, Neptune) | not started |
 

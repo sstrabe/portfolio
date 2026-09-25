@@ -21,21 +21,27 @@ fn assemble(parts: &[&str]) -> String {
     s
 }
 
-/// The per-pixel trace pass.
-pub fn trace() -> String {
-    assemble(&[wgsl!(
-        "near.wgsl",
-        "terrain.wgsl",
-        "planet.wgsl",
-        "atmo_common.wgsl",
-        "atmosphere.wgsl",
-        "clouds.wgsl",
-        "nebula.wgsl",
-        "ship.wgsl",
-        "lens.wgsl",
-        "far.wgsl",
-        "trace.wgsl"
-    )])
+/// The per-pixel trace pass; with `rt`, geometry is traced with hardware
+/// ray queries (`EXPERIMENTAL_RAY_QUERY`) instead of in software.
+pub fn trace(rt: bool) -> String {
+    let body = assemble(&[
+        wgsl!(
+            "near.wgsl",
+            "terrain.wgsl",
+            "planet.wgsl",
+            "atmo_common.wgsl",
+            "atmosphere.wgsl",
+            "clouds.wgsl",
+            "nebula.wgsl",
+            "ship.wgsl",
+            "lens.wgsl",
+            "far.wgsl",
+            "trace.wgsl"
+        ),
+        if rt { wgsl!("ship_rq.wgsl") } else { wgsl!("ship_bvh.wgsl") },
+    ]);
+    // An `enable` directive has to come before any declaration.
+    if rt { format!("enable wgpu_ray_query;\n{body}") } else { body }
 }
 
 /// Atmosphere lookup tables and cloud textures (entry points in
@@ -89,7 +95,7 @@ pub fn nebula_gen() -> String {
 /// The nebulae seen from inside the cluster, cached per direction (the trace
 /// sources plus `nebula_cube.wgsl`'s entry point).
 pub fn nebula_cube() -> String {
-    let mut s = trace();
+    let mut s = trace(false);
     s.push_str(wgsl!("nebula_cube.wgsl"));
     s
 }
@@ -108,11 +114,12 @@ pub fn probe() -> String {
     s
 }
 
-pub fn all() -> [(&'static str, String); 12] {
+pub fn all() -> [(&'static str, String); 13] {
     [
         ("probe", probe()),
         ("overlay", overlay()),
-        ("trace", trace()),
+        ("trace", trace(false)),
+        ("trace (ray queries)", trace(true)),
         ("nebula cube", nebula_cube()),
         ("atmosphere tables", atmosphere_tables()),
         ("nebula_gen", nebula_gen()),
