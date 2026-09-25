@@ -8,6 +8,7 @@
 pub mod cube;
 pub mod maps;
 pub mod probe;
+pub mod tiles;
 
 use kerr::vec3::{self, V3};
 
