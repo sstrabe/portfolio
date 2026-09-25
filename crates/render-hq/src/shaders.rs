@@ -112,7 +112,7 @@ pub fn overlay() -> String {
 pub fn probe() -> String {
     let mut s = String::from(::shaders::COMMON);
     s.push('\n');
-    s.push_str(wgsl!("cube.wgsl", "terrain.wgsl", "probe.wgsl"));
+    s.push_str(wgsl!("cube.wgsl", "anchor.wgsl", "terrain.wgsl", "probe.wgsl"));
     s
 }
 

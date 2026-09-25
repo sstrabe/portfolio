@@ -17,8 +17,8 @@
 //! (160 m for 1 cm cells). Farther out a cm octave is far below a pixel
 //! and is faded out anyway.
 //!
-//! [`noise`] is the CPU twin of the GPU's `anchored_noise`; keep them in
-//! step.
+//! [`noise`] and [`anchored`] are the CPU twins of `anc_noise` and
+//! `anchored_noise` in `wgsl/anchor.wgsl`; keep them in step.
 
 use kerr::vec3::V3;
 
@@ -180,6 +180,13 @@ mod tests {
                 assert!((n1 - n2).abs() < 2e-3, "{} cells/km: {n1} vs {n2}", o1.frac_freq[3]);
             }
         }
+    }
+
+    /// Mirrors `struct AnchorOctave` in `anchor.wgsl` (two vec4s).
+    #[test]
+    fn octave_layout_matches_the_shader() {
+        assert_eq!(std::mem::size_of::<OctaveGpu>(), 32);
+        assert_eq!(std::mem::offset_of!(OctaveGpu, frac_freq), 16);
     }
 
     /// Noise is continuous across cell boundaries and spans its range.
