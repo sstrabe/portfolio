@@ -1,0 +1,169 @@
+// ---------------------------------------------------------------------------
+// Terrain tile generation (see `terrain/tilegen.rs`): one tile per dispatch
+// into a layer of the tile atlas, (128 + 1 + 2·2)² texels: sample points
+// s = i/128 (i = 0 … 128, edges shared with the neighbours) and a two-texel
+// apron.
+//
+// * Coarse tiles (level < TILE_REFINE_FROM) evaluate the planet's terrain
+//   (`terrain_macro`, `terrain_solid`) at their sample directions, with
+//   detail down to wavelengths of four samples.
+// * Finer tiles refine their parent: its heights upsampled (Catmull-Rom),
+//   plus one octave of anchored noise at this level's wavelength (four
+//   samples), so each level adds exactly the detail its samples can hold.
+//   Positions come from the tile's expansion about its centre, relative to
+//   the anchor (`TileFrame`): small numbers only, exact to ~1 mm.
+//
+// A tile's edges lie on its parent's sample lines, where the cubic reduces
+// to one dimension along the line, so neighbouring tiles agree on their
+// shared edges (across cube faces too).
+// ---------------------------------------------------------------------------
+
+struct TileGenParams {
+    kind: u32,
+    seed: u32,
+    air: u32,
+    octave_count: u32,
+    radius: f32,
+    relief: f32,
+    sea: f32,
+    t_eq: f32,
+    // One per refined level, from TILE_REFINE_FROM.
+    octaves: array<AnchorOctave, 16>,
+}
+
+struct TileFrame {
+    origin: vec4<f32>,
+    a_s: vec4<f32>,
+    a_t: vec4<f32>,
+    b_ss: vec4<f32>,
+    b_st: vec4<f32>,
+    b_tt: vec4<f32>,
+}
+
+struct TileJob {
+    frame: TileFrame,
+    tile: vec4<u32>,   // face, level, x, y
+    slots: vec4<u32>,  // layer, parent's layer, 1 to refine the parent, unused
+}
+
+// Must match `terrain/tilegen.rs`.
+const TILE_SAMPLES: f32 = 128.0;
+const TILE_APRON: i32 = 2;
+const TILE_TEXELS: u32 = 133u;
+const TILE_REFINE_FROM: u32 = 12u;
+
+@group(0) @binding(1) var<uniform> tg: TileGenParams;
+@group(0) @binding(2) var<uniform> job: TileJob;
+@group(0) @binding(3) var tile_height: texture_storage_2d_array<r32float, read_write>;
+@group(0) @binding(4) var tile_material: texture_storage_2d_array<r32uint, read_write>;
+// Per layer: the lowest and highest height inside the tile, in mm.
+@group(0) @binding(5) var<storage, read_write> tile_range: array<atomic<i32>>;
+
+// Nominal sample spacing (km) at a level.
+fn tile_spacing(level: u32) -> f32 {
+    return tg.radius * 1.5707963 / (f32(1u << level) * TILE_SAMPLES);
+}
+
+// The point at centred tile coordinates (s, t), km from the anchor.
+fn tile_offset(f: TileFrame, s: f32, t: f32) -> vec3<f32> {
+    return f.origin.xyz + (f.a_s.xyz * s + f.a_t.xyz * t)
+        + (0.5 * f.b_ss.xyz * s * s + f.b_st.xyz * s * t + 0.5 * f.b_tt.xyz * t * t);
+}
+
+// Catmull-Rom weights for the taps at −1, 0, 1, 2 (exactly (0, 1, 0, 0) at
+// t = 0).
+fn tile_cubic(t: f32) -> vec4<f32> {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    return vec4<f32>(
+        -0.5 * t3 + t2 - 0.5 * t,
+        1.5 * t3 - 2.5 * t2 + 1.0,
+        -1.5 * t3 + 2.0 * t2 + 0.5 * t,
+        0.5 * t3 - 0.5 * t2,
+    );
+}
+
+fn tile_texel(c: vec2<i32>) -> vec2<i32> {
+    return clamp(c, vec2<i32>(0), vec2<i32>(i32(TILE_TEXELS) - 1));
+}
+
+// The parent's height at texel coordinates `p` (texel k at p = k).
+fn parent_height(layer: u32, p: vec2<f32>) -> f32 {
+    let base = floor(p);
+    let wx = tile_cubic(p.x - base.x);
+    let wy = tile_cubic(p.y - base.y);
+    let b = vec2<i32>(base);
+    var h = 0.0;
+    for (var j = 0; j < 4; j++) {
+        if (wy[j] == 0.0) {
+            continue;
+        }
+        var row = 0.0;
+        for (var i = 0; i < 4; i++) {
+            if (wx[i] != 0.0) {
+                row += wx[i] * textureLoad(tile_height, tile_texel(b + vec2<i32>(i - 1, j - 1)), layer).x;
+            }
+        }
+        h += wy[j] * row;
+    }
+    return h;
+}
+
+// The parent's material channels at texel coordinates `p` (bilinear).
+fn parent_material(layer: u32, p: vec2<f32>) -> vec4<f32> {
+    let base = floor(p);
+    let f = p - base;
+    let b = vec2<i32>(base);
+    let m00 = unpack4x8unorm(textureLoad(tile_material, tile_texel(b), layer).x);
+    let m10 = unpack4x8unorm(textureLoad(tile_material, tile_texel(b + vec2<i32>(1, 0)), layer).x);
+    let m01 = unpack4x8unorm(textureLoad(tile_material, tile_texel(b + vec2<i32>(0, 1)), layer).x);
+    let m11 = unpack4x8unorm(textureLoad(tile_material, tile_texel(b + vec2<i32>(1, 1)), layer).x);
+    return mix(mix(m00, m10, f.x), mix(m01, m11, f.x), f.y);
+}
+
+@compute @workgroup_size(8, 8)
+fn cs_tile_gen(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= TILE_TEXELS || gid.y >= TILE_TEXELS) {
+        return;
+    }
+    let tp = terrain_params(tg.kind, tg.seed, tg.radius, tg.relief, tg.sea, tg.t_eq, tg.air != 0u);
+    let level = job.tile.y;
+    let layer = job.slots.x;
+    // Sample index: 0 … 128 inside the tile.
+    let ij = vec2<i32>(gid.xy) - TILE_APRON;
+    let st = vec2<f32>(ij) / TILE_SAMPLES;
+    let spacing = tile_spacing(level);
+    var h: f32;
+    // Material: mountainousness, moisture, rock, land (see `terrain_macro`).
+    var m: vec4<f32>;
+    if (job.slots.z == 0u) {
+        // Coarse: the planet's terrain, down to four-sample wavelengths.
+        let uv = -1.0 + 2.0 * (vec2<f32>(job.tile.zw) + st) / f32(1u << level);
+        let q = csph_dir(job.tile.x, uv);
+        let lod = 2.0 * spacing;
+        let mac = terrain_macro(tp, q, lod);
+        h = terrain_solid(tp, q, mac, lod);
+        m = vec4<f32>(saturate(mac.y), saturate(mac.z), saturate(mac.w), smoothstep(-0.3, 0.2, mac.x));
+    } else {
+        // Refine: the parent upsampled, plus this level's octave.
+        let quadrant = vec2<f32>(job.tile.zw & vec2<u32>(1u)) * 0.5 * TILE_SAMPLES;
+        let p = quadrant + 0.5 * vec2<f32>(ij) + f32(TILE_APRON);
+        h = parent_height(job.slots.y, p);
+        m = parent_material(job.slots.y, p);
+        let d = tile_offset(job.frame, st.x - 0.5, st.y - 0.5);
+        let o = tg.octaves[min(level - TILE_REFINE_FROM, 15u)];
+        // Slopes stay roughly constant from octave to octave (as in
+        // `terrain_detail`): ridged ranges rough, lowlands gentle.
+        let k = tp.relief / 16.0;
+        let rough = (mix(0.12, 3.0, m.x * m.x) * m.w + 0.06) * k * (4.0 * spacing / tp.split);
+        h += rough * anchored_noise(o, d);
+    }
+    h = clamp(h, tp.lo, tp.hi);
+    textureStore(tile_height, gid.xy, layer, vec4<f32>(h));
+    textureStore(tile_material, gid.xy, layer, vec4<u32>(pack4x8unorm(m)));
+    if (all(ij >= vec2<i32>(0)) && all(ij <= vec2<i32>(i32(TILE_SAMPLES)))) {
+        let mm = i32(round(h * 1e6));
+        atomicMin(&tile_range[2u * layer], mm);
+        atomicMax(&tile_range[2u * layer + 1u], mm);
+    }
+}

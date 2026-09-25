@@ -716,4 +716,82 @@ mod tests {
         assert!((0.2..0.6).contains(&dry), "drylands {:.0} % of the land", 100.0 * dry);
         assert!(classes[5] as f64 / land as f64 > 0.25, "too little humid land");
     }
+
+    /// The tile generator on the GPU, at the showcase island: coarse tiles
+    /// agree with the probe, refined tiles stay near their parents, and
+    /// neighbours agree on their shared edge. Needs a GPU, so it's run by
+    /// hand: `cargo test -p desktop --release -- --ignored --nocapture tiles`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn tiles_on_the_gpu() {
+        use render_hq::terrain::anchor::Anchor;
+        use render_hq::terrain::tilegen::{self, TileGen};
+        use render_hq::terrain::tiles::{Side, TileId};
+        let world = crate::world(384);
+        let (n, cap) = (world.cluster.len() as u32, world.cluster.history.capacity() as u32);
+        let gpu = pollster::block_on(Gpu::new(crate::instance(), None, (64, 64), n, cap)).unwrap();
+        let (sys, i) = find_planet(&world, KindFilter::Kind(PlanetKind::Ocean)).unwrap();
+        let planet = &sys.planets[i];
+        let probe = Probe::new(&gpu.device);
+        let (site, _) = find_island(&world, &sys, i, &probe, &gpu).unwrap();
+        let anchor = Anchor::new(vec3::scale(site, planet.radius_km), tilegen::octaves(planet.radius_km, planet.seed));
+        let mut tile_gen = TileGen::new(&gpu.device);
+        let target = TileId::containing(site, 16);
+        let east = target.neighbour(Side::East);
+        let mut tiles = Vec::new();
+        for t in [target, east] {
+            let mut at = Some(t);
+            while let Some(a) = at {
+                if !tiles.contains(&a) {
+                    tiles.push(a);
+                }
+                at = a.parent();
+            }
+        }
+        let done = tile_gen.generate(&gpu.device, &gpu.queue, (0, 0, i), planet, &anchor, &tiles);
+        assert_eq!(done.len(), tiles.len(), "every tile generated");
+        let layer = |t: TileId| done.iter().find(|d| d.0 == t).map(|d| d.1).unwrap();
+        let heights = |t: TileId| tile_gen.read_heights(&gpu.device, &gpu.queue, layer(t));
+
+        // Coarse tiles evaluate the planet's terrain, as the probe does.
+        let coarse = TileId::containing(site, 11);
+        let hc = heights(coarse);
+        let points: Vec<(i32, i32)> = (0..=8).flat_map(|a| (0..=8).map(move |b| (16 * a, 16 * b))).collect();
+        let dirs: Vec<V3> = points.iter().map(|&(a, b)| coarse.direction(a as f64 / 128.0, b as f64 / 128.0)).collect();
+        let lod = 2.0 * tilegen::spacing_km(planet.radius_km, 11);
+        let probed = probe.sample(&gpu.device, &gpu.queue, planet, &dirs, lod);
+        let worst = points
+            .iter()
+            .zip(&probed)
+            .map(|(&(a, b), s)| (TileGen::at(&hc, a, b) as f64 - s.solid_km).abs())
+            .fold(0.0, f64::max);
+        println!("level 11 vs probe: worst {:.3} m", worst * 1000.0);
+        assert!(worst < 1e-3, "{worst} km");
+
+        // A refined tile stays near its parent: they differ by this level's
+        // octave only, at the parent's own samples.
+        let parent = target.parent().unwrap();
+        let (ht, hp) = (heights(target), heights(parent));
+        let (qx, qy) = ((target.x & 1) as i32 * 64, (target.y & 1) as i32 * 64);
+        let mut diff = 0.0f32;
+        for a in (0..=128).step_by(2) {
+            for b in (0..=128).step_by(2) {
+                diff = diff.max((TileGen::at(&ht, a, b) - TileGen::at(&hp, qx + a / 2, qy + b / 2)).abs());
+            }
+        }
+        println!("level 16 vs its parent: up to {:.3} m", diff * 1000.0);
+        assert!(diff < 0.02, "{diff} km");
+
+        // Neighbours agree on their shared edge.
+        let he = heights(east);
+        let mut edge = 0.0f32;
+        for b in 0..=128 {
+            let theirs = if east.face == target.face { TileGen::at(&he, 0, b) } else { continue };
+            edge = edge.max((TileGen::at(&ht, 128, b) - theirs).abs());
+        }
+        println!("shared edge: up to {:.3} mm", edge * 1e6);
+        assert!(edge < 1e-6, "{edge} km");
+        let (lo, hi) = ht.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(l, h), &v| (l.min(v), h.max(v)));
+        println!("level 16 tile at the island: {lo:.4} to {hi:.4} km");
+    }
 }

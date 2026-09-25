@@ -112,7 +112,16 @@ pub fn overlay() -> String {
 pub fn probe() -> String {
     let mut s = String::from(::shaders::COMMON);
     s.push('\n');
-    s.push_str(wgsl!("cube.wgsl", "anchor.wgsl", "terrain.wgsl", "probe.wgsl"));
+    s.push_str(wgsl!("cube.wgsl", "terrain.wgsl", "probe.wgsl"));
+    s
+}
+
+/// Terrain tile generation (`terrain/tilegen.rs`). Built on the Kerr
+/// prelude alone, binding its own resources in group 0.
+pub fn tile_gen() -> String {
+    let mut s = String::from(::shaders::COMMON);
+    s.push('\n');
+    s.push_str(wgsl!("cube.wgsl", "anchor.wgsl", "terrain.wgsl", "tile_gen.wgsl"));
     s
 }
 
@@ -125,8 +134,9 @@ pub fn climate() -> String {
     s
 }
 
-pub fn all() -> [(&'static str, String); 14] {
+pub fn all() -> [(&'static str, String); 15] {
     [
+        ("tile_gen", tile_gen()),
         ("climate", climate()),
         ("probe", probe()),
         ("overlay", overlay()),

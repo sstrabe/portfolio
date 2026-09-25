@@ -136,6 +136,8 @@ impl Gpu {
         }
         limits.max_storage_buffers_per_shader_stage = supported.max_storage_buffers_per_shader_stage;
         limits.max_storage_textures_per_shader_stage = supported.max_storage_textures_per_shader_stage;
+        // The terrain tile atlas is one texture array (`terrain::tilegen`).
+        limits.max_texture_array_layers = supported.max_texture_array_layers;
         limits.max_sampled_textures_per_shader_stage = supported.max_sampled_textures_per_shader_stage;
         limits.max_uniform_buffers_per_shader_stage = supported.max_uniform_buffers_per_shader_stage;
         // The FFT keeps a 2048-point row (or two 1024-point columns) of two
