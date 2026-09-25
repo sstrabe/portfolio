@@ -55,6 +55,10 @@ impl Session {
     /// Advance the world by `wall_dt` seconds of wall-clock time.
     pub fn advance(&mut self, wall_dt: f64, input: &Input) {
         self.wall_time += wall_dt;
+        // The terrain the renderer has read back is the ground the physics
+        // lands and stands on.
+        let ground = self.gpu.near.terrain.ground.snapshot();
+        self.world.set_ground(ground.map(|g| Box::new(g) as Box<dyn kerr::world::Ground>));
         self.world.step(wall_dt, input);
         self.sync_history();
     }

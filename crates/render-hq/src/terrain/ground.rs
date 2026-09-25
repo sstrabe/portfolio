@@ -32,6 +32,8 @@ struct Pending {
 #[derive(Default)]
 pub struct GroundCache {
     planet: Option<MapKey>,
+    /// The planet's spin axis, for the physics' body-fixed convention.
+    spin: V3,
     tiles: HashMap<TileId, MeshHeights>,
     pending: Vec<Pending>,
 }
@@ -44,7 +46,7 @@ impl GroundCache {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        key: MapKey,
+        (key, spin): (MapKey, V3),
         tile_gen: &TileGen,
         drawn: &[(TileId, u32)],
         eye_dir: V3,
@@ -52,6 +54,7 @@ impl GroundCache {
         if self.planet != Some(key) {
             *self = Self { planet: Some(key), ..Default::default() };
         }
+        self.spin = spin;
         let _ = device.poll(wgpu::PollType::Poll);
         let mut still = Vec::new();
         for p in self.pending.drain(..) {
@@ -107,14 +110,47 @@ impl GroundCache {
     /// The ground's height (km above the datum) at body-fixed unit
     /// direction `q`, from the finest cached tile holding it.
     pub fn height_km(&self, q: V3) -> Option<f64> {
-        let (face, u, v) = cube::face_uv(q);
-        let (tile, heights) = self
-            .tiles
-            .iter()
-            .filter(|(t, _)| t.contains_tile(TileId::at(face as u8, u, v, t.level)))
-            .max_by_key(|(t, _)| t.level)?;
-        Some(mesh_height(*tile, heights, u, v))
+        height_in(&self.tiles, q)
     }
+
+    /// A copy for the physics: the heights are shared, so it's cheap.
+    pub fn snapshot(&self) -> Option<GroundSnapshot> {
+        let (star, generation, planet) = self.planet?;
+        (!self.tiles.is_empty()).then(|| GroundSnapshot {
+            planet: kerr::local::PlanetRef { star, generation, planet },
+            axes: super::body_axes(self.spin, 0.0),
+            tiles: self.tiles.clone(),
+        })
+    }
+}
+
+/// The ground as the physics sees it ([`kerr::world::Ground`]).
+pub struct GroundSnapshot {
+    planet: kerr::local::PlanetRef,
+    /// The renderer's body axes at rotation angle 0: the physics' body-fixed
+    /// directions (planet-frame axes turned back by the rotation) are
+    /// turned into the renderer's with these.
+    axes: [V3; 3],
+    tiles: HashMap<TileId, MeshHeights>,
+}
+
+impl kerr::world::Ground for GroundSnapshot {
+    fn planet(&self) -> kerr::local::PlanetRef {
+        self.planet
+    }
+
+    fn height_km(&self, q: V3) -> Option<f64> {
+        height_in(&self.tiles, super::to_body(&self.axes, q))
+    }
+}
+
+fn height_in(tiles: &HashMap<TileId, MeshHeights>, q: V3) -> Option<f64> {
+    let (face, u, v) = cube::face_uv(q);
+    let (tile, heights) = tiles
+        .iter()
+        .filter(|(t, _)| t.contains_tile(TileId::at(face as u8, u, v, t.level)))
+        .max_by_key(|(t, _)| t.level)?;
+    Some(mesh_height(*tile, heights, u, v))
 }
 
 /// Height on a tile's mesh at face coordinates (u, v): the grid quad's two

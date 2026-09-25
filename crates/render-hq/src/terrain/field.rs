@@ -123,7 +123,14 @@ impl TerrainField {
             }
         }
         self.tile_gen.poll_ranges(device, queue);
-        self.ground.update(device, queue, key, &self.tile_gen, &self.drawn, vec3::normalize(eye_km));
+        self.ground.update(
+            device,
+            queue,
+            (key, planet.spin_axis),
+            &self.tile_gen,
+            &self.drawn,
+            vec3::normalize(eye_km),
+        );
         if let Some(accel) = &mut self.tile_gen.accel {
             let mut enc =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("terrain tlas") });

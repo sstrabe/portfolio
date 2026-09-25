@@ -110,6 +110,16 @@ pub fn run(o: &Options) -> Result<(), String> {
         m.p95,
         m.fifth_star
     );
+    if let Some((_, eye)) = s.gpu.near.terrain_pose()
+        && let (Some(ground), Some(t)) =
+            (s.gpu.near.terrain.ground.height_km(kerr::vec3::normalize(eye)), &s.world.telemetry().planet)
+    {
+        println!(
+            "terrain under the eye: ground {:.3} m, eye {:.3} m above the datum",
+            ground * 1000.0,
+            t.altitude_km * 1000.0
+        );
+    }
     let ts = s.gpu.near.terrain.stats;
     if ts.selected > 0 {
         println!(

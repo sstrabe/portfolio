@@ -339,6 +339,20 @@ pub struct PlanetTelemetry {
     pub landed: bool,
 }
 
+/// The solid ground of a planet near the ship, from outside `kerr` (the
+/// renderer's terrain tiles, read back from the GPU): heights above the
+/// datum at body-fixed directions. `kerr` stays GPU-free; where no ground is
+/// known it's the datum sphere.
+pub trait Ground: Send + Sync {
+    /// The planet it describes.
+    fn planet(&self) -> PlanetRef;
+    /// Height (km above the datum) of the solid ground at body-fixed unit
+    /// direction `q`, if known. Body-fixed as landed offsets are: the
+    /// planet-frame direction turned back by the planet's rotation angle
+    /// about its spin axis (so still in the simulation's x, y, z axes).
+    fn height_km(&self, q: V3) -> Option<f64>;
+}
+
 pub struct World {
     pub kerr: Kerr,
     pub cfg: WorldConfig,
@@ -368,6 +382,11 @@ pub struct World {
     well: Option<PlanetRef>,
     warp_limited: bool,
     time_scale_now: f64,
+    /// The ground near the ship (see [`Ground`]), set by the renderer.
+    ground: Option<Box<dyn Ground>>,
+    /// How far above the ground a landed ship rests, km: the ship's own
+    /// clearance, or eye height when standing.
+    pub clearance_km: f64,
 }
 
 pub const STATION_TEMPERATURE: f64 = 6500.0;
@@ -440,8 +459,25 @@ impl World {
             well: None,
             warp_limited: false,
             time_scale_now: cfg.time_scale,
+            ground: None,
+            clearance_km: LANDED_HEIGHT_KM,
             cfg,
         }
+    }
+
+    /// The ground near the ship from outside (`None`: the datum sphere).
+    pub fn set_ground(&mut self, ground: Option<Box<dyn Ground>>) {
+        self.ground = ground;
+    }
+
+    /// Height (km above the datum) of the surface a ship would rest on at
+    /// body-fixed direction `q` of planet `p`, where the ground is known
+    /// (the sea's surface over basins of an ocean world).
+    fn surface_height_km(&self, p: PlanetRef, q: V3) -> Option<f64> {
+        let h = self.ground.as_ref().filter(|g| g.planet() == p).and_then(|g| g.height_km(q))?;
+        let sea =
+            self.system_of(p).and_then(|l| l.planet(p.planet)).is_some_and(|pl| pl.kind == planets::PlanetKind::Ocean);
+        Some(if sea { h.max(0.0) } else { h })
     }
 
     pub fn station_count(&self) -> usize {
@@ -576,6 +612,9 @@ impl World {
             }
             if let Stepped::Hit { from, to } = stepped {
                 self.touch(from, to);
+                break;
+            }
+            if self.touch_ground() {
                 break;
             }
             if let Some(target) = self.autopilot_target() {
@@ -1364,8 +1403,14 @@ impl World {
                 let p = l.planet_ref(i);
                 let (_, radius) = l.planet_mass(i);
                 let planet = l.planet(i).expect("planet");
-                let r = vec3::scale(vec3::normalize(rel.pos), radius + LANDED_HEIGHT_KM / KM_PER_M);
-                let offset = vec3::rotate(r, planet.spin_axis, -planet.rotation(rel.centre[0] * SECONDS_PER_M));
+                let q = vec3::rotate(
+                    vec3::normalize(rel.pos),
+                    planet.spin_axis,
+                    -planet.rotation(rel.centre[0] * SECONDS_PER_M),
+                );
+                let h = self.surface_height_km(p, q).unwrap_or(0.0);
+                let offset = vec3::scale(q, radius + (h + LANDED_HEIGHT_KM) / KM_PER_M);
+                self.clearance_km = LANDED_HEIGHT_KM;
                 let (x, ground) = surface(l, i, offset, t);
                 let v_ship = rel.frame.velocity(&self.kerr, self.pilot.e[0]);
                 let speed = vec3::norm(vec3::sub(v_ship, rel.frame.velocity(&self.kerr, ground))) * C_KM_S;
@@ -1382,6 +1427,32 @@ impl World {
                 self.events.push(WorldEvent::StarContact);
             }
         }
+    }
+
+    /// Land if the ship has come down to the ground above the datum (the
+    /// sphere contact is `touch`'s). True when it landed.
+    fn touch_ground(&mut self) -> bool {
+        let Some(p) = self.ground.as_ref().map(|g| g.planet()) else { return false };
+        let Some(l) = self.system_of(p) else { return false };
+        let Some(planet) = l.planet(p.planet) else { return false };
+        let (_, radius) = l.planet_mass(p.planet);
+        let rel = l.planet_relative(p.planet, self.pilot.x);
+        let body = vec3::rotate(rel.pos, planet.spin_axis, -planet.rotation(rel.centre[0] * SECONDS_PER_M));
+        let q = vec3::normalize(body);
+        let altitude_km = (vec3::norm(body) - radius) * KM_PER_M;
+        let Some(h) = self.surface_height_km(p, q) else { return false };
+        if altitude_km > h + LANDED_HEIGHT_KM {
+            return false;
+        }
+        let v_ship = rel.frame.velocity(&self.kerr, self.pilot.e[0]);
+        let offset = vec3::scale(q, radius + (h + LANDED_HEIGHT_KM) / KM_PER_M);
+        let (x, ground) = surface(l, p.planet, offset, self.pilot.x[0]);
+        let speed = vec3::norm(vec3::sub(v_ship, rel.frame.velocity(&self.kerr, ground))) * C_KM_S;
+        self.place_event(x, ground);
+        self.status = PilotStatus::Landed { planet: p, offset };
+        self.clearance_km = LANDED_HEIGHT_KM;
+        self.events.push(WorldEvent::Landed { speed });
+        true
     }
 
     fn place(&mut self, t: f64, pos: V3, vel: V3) {
@@ -1434,10 +1505,18 @@ impl World {
 
     /// Ride on a planet's surface for `dtau`, turning with it.
     fn ride_surface(&mut self, p: PlanetRef, offset: V3, dtau: f64, wall_dt: f64, input: &Input) {
-        let Some(l) = self.system_of(p) else {
+        let Some((_, radius)) = self.system_of(p).map(|l| l.planet_mass(p.planet)) else {
             self.status = PilotStatus::Free;
             return self.fly(input, wall_dt, dtau);
         };
+        // Rest on the ground where it's known, `clearance_km` above it.
+        let q = vec3::normalize(offset);
+        let offset = match self.surface_height_km(p, q) {
+            Some(h) => vec3::scale(q, radius + (h + self.clearance_km) / KM_PER_M),
+            None => offset,
+        };
+        self.status = PilotStatus::Landed { planet: p, offset };
+        let Some(l) = self.system_of(p) else { return };
         let planet = l.planet(p.planet).expect("planet");
         let omega = std::f64::consts::TAU / planet.rotation_period_s * SECONDS_PER_M;
         let t = self.pilot.x[0];
@@ -1906,6 +1985,65 @@ mod tests {
             w.events.contains(&WorldEvent::OrbitReached(target))
         });
         assert!(reached && max_gamma > 10.0, "max γ {max_gamma}: {:?}", w.telemetry());
+    }
+
+    /// Ground at a fixed height above the datum everywhere.
+    struct FlatGround {
+        planet: PlanetRef,
+        height_km: f64,
+    }
+
+    impl Ground for FlatGround {
+        fn planet(&self) -> PlanetRef {
+            self.planet
+        }
+        fn height_km(&self, _q: V3) -> Option<f64> {
+            Some(self.height_km)
+        }
+    }
+
+    /// With ground known above the datum, a falling ship lands on it (not
+    /// on the sphere below), and stays there.
+    #[test]
+    fn falling_ship_lands_on_the_ground() {
+        let (mut w, p) = planet_world();
+        w.set_ground(Some(Box::new(FlatGround { planet: p, height_km: 2.0 })));
+        let (r, _) = circular(&w, p, 2000.0);
+        put_near(&mut w, p, r, [0.0; 3]);
+        w.cfg.time_scale = 1e9;
+        let input = Input { autopilot: -1, ..Default::default() };
+        let landed = (0..60 * 60).any(|_| {
+            w.step(1.0 / 60.0, &input);
+            matches!(w.status, PilotStatus::Landed { .. })
+        });
+        assert!(landed, "{:?}", w.telemetry());
+        for _ in 0..60 {
+            w.step(1.0 / 60.0, &input);
+        }
+        let t = w.telemetry().planet.unwrap();
+        assert!((t.altitude_km - 2.0 - LANDED_HEIGHT_KM).abs() < 1e-3, "{t:?}");
+    }
+
+    /// A landed ship settles onto ground that becomes known, at its
+    /// clearance (eye height when standing).
+    #[test]
+    fn landed_ship_settles_on_the_ground() {
+        let (mut w, p) = planet_world();
+        let (r, _) = circular(&w, p, 2000.0);
+        put_near(&mut w, p, r, [0.0; 3]);
+        w.cfg.time_scale = 1e9;
+        let input = Input { autopilot: -1, ..Default::default() };
+        assert!((0..60 * 60).any(|_| {
+            w.step(1.0 / 60.0, &input);
+            matches!(w.status, PilotStatus::Landed { .. })
+        }));
+        w.set_ground(Some(Box::new(FlatGround { planet: p, height_km: 0.35 })));
+        w.clearance_km = 0.0017;
+        for _ in 0..30 {
+            w.step(1.0 / 60.0, &input);
+        }
+        let t = w.telemetry().planet.unwrap();
+        assert!(t.landed && (t.altitude_km - 0.3517).abs() < 1e-4, "{t:?}");
     }
 
     #[test]

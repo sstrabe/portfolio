@@ -372,6 +372,8 @@ fn on_ground(world: &mut World, g: GroundStart, gpu: &Gpu) -> Result<String, Str
     if !world.land(pref, offset) {
         return Err("could not land".into());
     }
+    // Stay at eye height as the terrain tiles' ground becomes known.
+    world.clearance_km = g.height_m / 1000.0;
     world.cfg.time_scale = 1.0 / SECONDS_PER_M;
     let sun_elevation = vec3::dot(to_star, up).asin().to_degrees();
     let what = match (ground.fill, ground.solid_km < 0.0) {
