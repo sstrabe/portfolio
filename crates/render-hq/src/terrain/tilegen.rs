@@ -15,7 +15,6 @@
 //! 0.07 mm at level 12, so levels from [`EXPANDED_FROM`] use the expansion
 //! and coarser tiles take their directions from `cube` directly.
 
-use super::cube;
 use super::tiles::TileId;
 use kerr::vec3::{self, V3};
 
@@ -68,6 +67,7 @@ pub fn offset(f: &TileFrameGpu, s: f32, t: f32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terrain::cube;
     use crate::terrain::tiles::{MAX_LEVEL, TILE_SAMPLES};
 
     const RADIUS: f64 = 7234.0;
