@@ -5,6 +5,7 @@
 //! asks the GPU for it ([`probe::Probe`]) rather than keeping a second copy
 //! that could drift from what is drawn.
 
+pub mod anchor;
 pub mod cube;
 pub mod maps;
 pub mod probe;
