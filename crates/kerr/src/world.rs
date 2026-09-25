@@ -387,7 +387,14 @@ pub struct World {
     /// How far above the ground a landed ship rests, km: the ship's own
     /// clearance, or eye height when standing.
     pub clearance_km: f64,
+    /// On foot (landed): movement input walks along the ground instead of
+    /// lifting off.
+    pub on_foot: bool,
 }
+
+/// Walking and running pace on foot, m/s.
+const WALK_SPEED_M_S: f64 = 1.4;
+const RUN_SPEED_M_S: f64 = 4.0;
 
 pub const STATION_TEMPERATURE: f64 = 6500.0;
 
@@ -461,6 +468,7 @@ impl World {
             time_scale_now: cfg.time_scale,
             ground: None,
             clearance_km: LANDED_HEIGHT_KM,
+            on_foot: false,
             cfg,
         }
     }
@@ -514,7 +522,7 @@ impl World {
                     self.status = PilotStatus::Free;
                     self.events.push(WorldEvent::AutopilotOff);
                 }
-                PilotStatus::Landed { .. } => self.status = PilotStatus::Free,
+                PilotStatus::Landed { .. } if !self.on_foot => self.status = PilotStatus::Free,
                 _ => {}
             }
         }
@@ -1503,13 +1511,43 @@ impl World {
         Some((p, point))
     }
 
+    /// Where a walker at body-fixed `offset` on planet `p` gets to in
+    /// `wall_dt` seconds: the pilot's forward and left flattened onto the
+    /// ground, times the movement input, at walking pace (running with
+    /// boost). `None` without horizontal input.
+    fn walk(&self, p: PlanetRef, offset: V3, wall_dt: f64, input: &Input) -> Option<V3> {
+        let (ax, ay) = (input.thrust[0], input.thrust[1]);
+        if ax == 0.0 && ay == 0.0 {
+            return None;
+        }
+        let l = self.system_of(p)?;
+        let planet = l.planet(p.planet)?;
+        let rel = l.planet_relative(p.planet, self.pilot.x);
+        let angle = planet.rotation(rel.centre[0] * SECONDS_PER_M);
+        let q = vec3::normalize(offset);
+        let flat = |v: V4| {
+            let b = vec3::rotate(rel.frame.components(&self.kerr, v).1, planet.spin_axis, -angle);
+            vec3::normalize(vec3::axpy(b, -vec3::dot(b, q), q))
+        };
+        let dir = vec3::add(vec3::scale(flat(self.pilot.e[1]), ax), vec3::scale(flat(self.pilot.e[2]), ay));
+        let len = vec3::norm(dir);
+        if len < 1e-12 {
+            return None;
+        }
+        let pace = if input.boost { RUN_SPEED_M_S } else { WALK_SPEED_M_S };
+        let step = pace * wall_dt * len.min(1.0) / len / 1000.0 / KM_PER_M;
+        Some(vec3::scale(vec3::normalize(vec3::axpy(offset, step, dir)), vec3::norm(offset)))
+    }
+
     /// Ride on a planet's surface for `dtau`, turning with it.
     fn ride_surface(&mut self, p: PlanetRef, offset: V3, dtau: f64, wall_dt: f64, input: &Input) {
         let Some((_, radius)) = self.system_of(p).map(|l| l.planet_mass(p.planet)) else {
             self.status = PilotStatus::Free;
             return self.fly(input, wall_dt, dtau);
         };
-        // Rest on the ground where it's known, `clearance_km` above it.
+        // On foot, walk; then rest on the ground where it's known,
+        // `clearance_km` above it.
+        let offset = if self.on_foot { self.walk(p, offset, wall_dt, input).unwrap_or(offset) } else { offset };
         let q = vec3::normalize(offset);
         let offset = match self.surface_height_km(p, q) {
             Some(h) => vec3::scale(q, radius + (h + self.clearance_km) / KM_PER_M),
@@ -2044,6 +2082,37 @@ mod tests {
         }
         let t = w.telemetry().planet.unwrap();
         assert!(t.landed && (t.altitude_km - 0.3517).abs() < 1e-4, "{t:?}");
+    }
+
+    /// On foot, movement input walks along the ground at walking pace,
+    /// staying at eye height and landed.
+    #[test]
+    fn walking_moves_along_the_ground() {
+        let (mut w, p) = planet_world();
+        let (r, _) = circular(&w, p, 2000.0);
+        put_near(&mut w, p, r, [0.0; 3]);
+        w.cfg.time_scale = 1e9;
+        let input = Input { autopilot: -1, ..Default::default() };
+        assert!((0..60 * 60).any(|_| {
+            w.step(1.0 / 60.0, &input);
+            matches!(w.status, PilotStatus::Landed { .. })
+        }));
+        w.set_ground(Some(Box::new(FlatGround { planet: p, height_km: 0.2 })));
+        w.clearance_km = 0.0017;
+        w.on_foot = true;
+        w.cfg.time_scale = 1.0 / SECONDS_PER_M;
+        w.step(1.0 / 60.0, &input);
+        let PilotStatus::Landed { offset: start, .. } = w.status else { panic!() };
+        let walk = Input { thrust: [1.0, 0.0, 0.0], autopilot: -1, ..Default::default() };
+        for _ in 0..120 {
+            w.step(1.0 / 60.0, &walk);
+        }
+        let PilotStatus::Landed { offset: end, .. } = w.status else { panic!("{:?}", w.status) };
+        let radius_m = vec3::norm(start) * KM_PER_M * 1000.0;
+        let moved_m = vec3::dot(vec3::normalize(start), vec3::normalize(end)).clamp(-1.0, 1.0).acos() * radius_m;
+        assert!((moved_m - 2.0 * WALK_SPEED_M_S).abs() < 0.05, "{moved_m} m");
+        let t = w.telemetry().planet.unwrap();
+        assert!((t.altitude_km - 0.2017).abs() < 1e-5, "{t:?}");
     }
 
     #[test]
