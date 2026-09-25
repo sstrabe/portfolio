@@ -125,6 +125,13 @@ pub fn tile_gen() -> String {
     s
 }
 
+/// Rays against the terrain's TLAS, read back (`terrain/rt.rs`).
+pub fn tile_cast() -> String {
+    let mut s = String::from("enable wgpu_ray_query;\n");
+    s.push_str(wgsl!("tile_cast.wgsl"));
+    s
+}
+
 /// The climate bake (`terrain/maps.rs`). Built on the Kerr prelude
 /// alone, binding its own resources in group 0.
 pub fn climate() -> String {
@@ -134,9 +141,10 @@ pub fn climate() -> String {
     s
 }
 
-pub fn all() -> [(&'static str, String); 15] {
+pub fn all() -> [(&'static str, String); 16] {
     [
         ("tile_gen", tile_gen()),
+        ("tile_cast", tile_cast()),
         ("climate", climate()),
         ("probe", probe()),
         ("overlay", overlay()),

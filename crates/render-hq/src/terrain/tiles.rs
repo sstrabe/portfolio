@@ -149,30 +149,57 @@ impl TileId {
     }
 }
 
-/// The tiles to draw for an eye at `eye` (body-fixed km from the planet's
-/// centre): the quadtree refined until each tile's sample spacing, seen
-/// from the eye, is at most `max_px` pixels of `pixel_angle` rad, leaving
-/// out tiles below the horizon of a planet of `radius_km` with terrain
-/// within `relief_km` of it. At most `max_tiles` (refinement stops once
-/// the budget would be exceeded, nearest tiles first). The result is a set
-/// of leaves: no tile in it contains another.
-pub fn select(eye: V3, radius_km: f64, relief_km: f64, pixel_angle: f64, max_px: f64, max_tiles: usize) -> Vec<TileId> {
-    let r_eye = vec3::norm(eye);
-    let up = vec3::scale(eye, 1.0 / r_eye.max(1e-9));
+/// What [`select`] refines for.
+pub struct Query<'a> {
+    /// The eye, body-fixed km from the planet's centre.
+    pub eye_km: V3,
+    pub radius_km: f64,
+    /// Terrain lies within this of the datum.
+    pub relief_km: f64,
+    /// Radians per pixel.
+    pub pixel_angle: f64,
+    /// Refine until a tile's samples are at most this many pixels apart.
+    pub max_px: f64,
+    pub max_tiles: usize,
+    /// A tile's heights (lowest, highest; km from the datum) where known.
+    pub band: &'a dyn Fn(TileId) -> Option<(f64, f64)>,
+}
+
+/// The tiles to draw: the quadtree refined until each tile's sample
+/// spacing, seen from the eye, is at most `max_px` pixels, leaving out
+/// tiles below the horizon. At most `max_tiles` (refinement stops once the
+/// budget would be exceeded, nearest tiles first). The result is a set of
+/// leaves: no tile in it contains another.
+///
+/// A tile's distance combines how far its footprint is along the ground
+/// with how far the eye is above or below its band of heights (the
+/// planet's whole relief where the band isn't known yet), so standing on a
+/// mountain refines the ground underfoot as finely as standing on a beach.
+pub fn select(q: &Query) -> Vec<TileId> {
+    let (radius_km, relief_km) = (q.radius_km, q.relief_km);
+    let r_eye = vec3::norm(q.eye_km);
+    let up = vec3::scale(q.eye_km, 1.0 / r_eye.max(1e-9));
+    let altitude = r_eye - radius_km;
     let (low, high) = (radius_km - relief_km, radius_km + relief_km);
     // Angle from the eye's nadir to the farthest visible terrain: over the
     // horizon of the lowest ground, up to the highest peaks behind it.
     let horizon = if r_eye > low { (low / r_eye).acos() + (low / high).acos() } else { std::f64::consts::PI };
-    let visible = |t: TileId| vec3::dot(up, t.centre()).clamp(-1.0, 1.0).acos() <= horizon + t.angular_radius();
-    // Nearest distance from the eye to the tile on the datum sphere (km),
-    // no nearer than the eye's height above it. (The relief isn't padded
-    // on: within the relief of the eye every tile would tie. Generated
-    // tiles will carry their own height ranges.)
+    // Angle between unit vectors, accurate when tiny.
+    let angle = |a: V3, b: V3| vec3::norm(vec3::cross(a, b)).atan2(vec3::dot(a, b));
+    let visible = |t: TileId| angle(up, t.centre()) <= horizon + t.angular_radius();
     let distance = |t: TileId| {
-        let reach = radius_km * t.angular_radius();
-        (vec3::norm(vec3::sub(eye, vec3::scale(t.centre(), radius_km))) - reach)
-            .max((r_eye - radius_km).abs().max(1e-6))
+        let along = radius_km * (angle(up, t.centre()) - t.angular_radius()).max(0.0);
+        let (lo, hi) = (q.band)(t).unwrap_or((-relief_km, relief_km));
+        let vertical = if altitude > hi {
+            altitude - hi
+        } else if altitude < lo {
+            lo - altitude
+        } else {
+            0.0
+        };
+        along.hypot(vertical).max(1e-6)
     };
+    let (max_px, pixel_angle, max_tiles) = (q.max_px, q.pixel_angle, q.max_tiles);
     let wants_split = |t: TileId| {
         let spacing = radius_km * t.angular_size() / TILE_SAMPLES as f64;
         t.level < MAX_LEVEL && spacing / distance(t) > max_px * pixel_angle
@@ -271,6 +298,27 @@ mod tests {
         assert!(edge_crossings >= 24, "{edge_crossings}");
     }
 
+    fn query<'a>(eye: V3, pixel: f64, band: &'a dyn Fn(TileId) -> Option<(f64, f64)>) -> Query<'a> {
+        Query { eye_km: eye, radius_km: EARTH, relief_km: 9.0, pixel_angle: pixel, max_px: 2.0, max_tiles: 1500, band }
+    }
+
+    /// On a 5 km summit the ground underfoot is refined as finely as at
+    /// sea level once the tiles' heights are known (and nearly so before).
+    #[test]
+    fn selection_on_a_summit() {
+        let foot = cube::direction(1, -0.4, 0.1);
+        let eye = vec3::scale(foot, EARTH + 5.2017);
+        let finest_under = |band: &dyn Fn(TileId) -> Option<(f64, f64)>| {
+            let tiles = select(&query(eye, 1e-3, band));
+            check_leaves(&tiles);
+            tiles.iter().find(|t| t.contains_tile(TileId::containing(foot, MAX_LEVEL))).map(|t| t.level).unwrap()
+        };
+        let known = finest_under(&|_| Some((5.195, 5.2005)));
+        let unknown = finest_under(&|_| None);
+        assert!(known >= 20, "{known}");
+        assert!(unknown >= 16, "{unknown}");
+    }
+
     fn check_leaves(tiles: &[TileId]) {
         for (i, a) in tiles.iter().enumerate() {
             for b in &tiles[i + 1..] {
@@ -286,7 +334,7 @@ mod tests {
         let foot = cube::direction(2, 0.3, -0.2);
         let eye = vec3::scale(foot, EARTH + 0.0017);
         let pixel = 1e-3;
-        let tiles = select(eye, EARTH, 9.0, pixel, 2.0, 1500);
+        let tiles = select(&query(eye, pixel, &|_| None));
         check_leaves(&tiles);
         assert!(tiles.len() <= 1500);
         let under =
@@ -302,7 +350,7 @@ mod tests {
     #[test]
     fn selection_from_orbit() {
         let eye = [0.0, 0.0, EARTH + 20_000.0];
-        let tiles = select(eye, EARTH, 9.0, 1e-3, 2.0, 1500);
+        let tiles = select(&query(eye, 1e-3, &|_| None));
         check_leaves(&tiles);
         assert!(tiles.iter().all(|t| t.level <= 6), "{:?}", tiles.iter().map(|t| t.level).max());
         // Every direction the eye can see lies in a selected tile.

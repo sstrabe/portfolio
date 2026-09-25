@@ -11,6 +11,7 @@ pub mod cube;
 pub mod field;
 pub mod maps;
 pub mod probe;
+pub mod rt;
 pub mod tilegen;
 pub mod tiles;
 

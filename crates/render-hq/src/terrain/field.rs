@@ -50,8 +50,14 @@ pub struct TerrainField {
 }
 
 impl TerrainField {
-    pub fn new(device: &wgpu::Device) -> Self {
-        Self { tile_gen: TileGen::new(device), anchor: None, drawn: Vec::new(), stats: FieldStats::default() }
+    /// `rt`: build BLASes and a TLAS of the drawn tiles.
+    pub fn new(device: &wgpu::Device, rt: bool) -> Self {
+        Self { tile_gen: TileGen::new(device, rt), anchor: None, drawn: Vec::new(), stats: FieldStats::default() }
+    }
+
+    /// The anchor of the noise and of the TLAS (body-fixed km).
+    pub fn anchor_km(&self) -> Option<V3> {
+        self.anchor.as_ref().map(|(_, a)| a.origin_km)
     }
 
     /// Update for an eye at `eye_km` (body-fixed, from the centre of the
@@ -77,7 +83,17 @@ impl TerrainField {
         let Some((_, anchor)) = &self.anchor else { return };
 
         let r = planet.radius_km;
-        let mut wanted = tiles::select(eye_km, r, planet.relief_km, pixel_angle, MAX_PX, MAX_SELECTED);
+        let tile_gen = &self.tile_gen;
+        let band = |t: TileId| tile_gen.band(t);
+        let mut wanted = tiles::select(&tiles::Query {
+            eye_km,
+            radius_km: r,
+            relief_km: planet.relief_km,
+            pixel_angle,
+            max_px: MAX_PX,
+            max_tiles: MAX_SELECTED,
+            band: &band,
+        });
         // Nearest first.
         let distance = |t: &TileId| vec3::norm(vec3::sub(vec3::scale(t.centre(), r), eye_km));
         wanted.sort_by(|a, b| distance(a).total_cmp(&distance(b)));
@@ -96,6 +112,13 @@ impl TerrainField {
                     self.drawn.push((shown, layer));
                 }
             }
+        }
+        self.tile_gen.poll_ranges(device, queue);
+        if let Some(accel) = &mut self.tile_gen.accel {
+            let mut enc =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("terrain tlas") });
+            accel.build_tlas(&mut enc, &self.drawn, r, anchor.origin_km);
+            queue.submit([enc.finish()]);
         }
         self.stats = FieldStats {
             selected: wanted.len(),

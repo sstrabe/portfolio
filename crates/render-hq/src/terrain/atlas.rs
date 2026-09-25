@@ -49,6 +49,11 @@ impl Atlas {
         })
     }
 
+    /// The layer holding `t`, without marking it used.
+    pub fn peek(&self, t: TileId) -> Option<u32> {
+        self.slots.get(&t).map(|s| s.layer)
+    }
+
     /// The layer of `t` or, if it isn't resident, of its nearest resident
     /// ancestor, with the tile found (marked used this frame).
     pub fn get_or_ancestor(&mut self, t: TileId) -> Option<(TileId, u32)> {

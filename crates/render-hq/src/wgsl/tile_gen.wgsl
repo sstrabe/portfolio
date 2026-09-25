@@ -42,8 +42,9 @@ struct TileFrame {
 
 struct TileJob {
     frame: TileFrame,
-    tile: vec4<u32>,   // face, level, x, y
-    slots: vec4<u32>,  // layer, parent's layer, 1 to refine the parent, unused
+    tile: vec4<u32>,    // face, level, x, y
+    slots: vec4<u32>,   // layer, parent's layer, 1 to refine the parent, unused
+    centre: vec4<f32>,  // unit direction of the tile's centre (body fixed), planet radius (km)
 }
 
 // Must match `terrain/tilegen.rs`.
@@ -58,6 +59,15 @@ const TILE_REFINE_FROM: u32 = 12u;
 @group(0) @binding(4) var tile_material: texture_storage_2d_array<r32uint, read_write>;
 // Per layer: the lowest and highest height inside the tile, in mm.
 @group(0) @binding(5) var<storage, read_write> tile_range: array<atomic<i32>>;
+// Mesh vertices for the ray-tracing hardware (see `terrain/rt.rs`):
+// TILE_MESH_VERTS per layer, xyz in km relative to the tile's centre point
+// on the datum sphere, body-fixed axes.
+@group(0) @binding(6) var<storage, read_write> tile_vertices: array<vec4<f32>>;
+
+// Must match `terrain/rt.rs`.
+const TILE_MESH_STEP: i32 = 2;
+const TILE_MESH_N: u32 = 64u;
+const TILE_MESH_VERTS: u32 = 4485u;
 
 // Nominal sample spacing (km) at a level.
 fn tile_spacing(level: u32) -> f32 {
@@ -165,5 +175,62 @@ fn cs_tile_gen(@builtin(global_invocation_id) gid: vec3<u32>) {
         let mm = i32(round(h * 1e6));
         atomicMin(&tile_range[2u * layer], mm);
         atomicMax(&tile_range[2u * layer + 1u], mm);
+    }
+}
+
+// The tile's point at mesh vertex (i, j) (every TILE_MESH_STEP samples),
+// relative to its centre point on the datum sphere, and the local up.
+fn tile_mesh_point(i: u32, j: u32) -> array<vec3<f32>, 2> {
+    let level = job.tile.y;
+    let st = vec2<f32>(f32(i), f32(j)) / f32(TILE_MESH_N);
+    let r = job.centre.w;
+    let c = job.centre.xyz * r;
+    var local: vec3<f32>;
+    if (job.slots.z == 0u) {
+        // Coarse tiles: straight from the cube (km-sized triangles; f32's
+        // ~0.5 m here is plenty).
+        let n = f32(1u << level);
+        let uv = -1.0 + 2.0 * (vec2<f32>(job.tile.zw) + st) / n;
+        local = r * csph_dir(job.tile.x, uv) - c;
+    } else {
+        // Fine tiles: the f64 expansion without its anchor offset.
+        let f = job.frame;
+        let s = st.x - 0.5;
+        let t = st.y - 0.5;
+        local = (f.a_s.xyz * s + f.a_t.xyz * t) + (0.5 * f.b_ss.xyz * s * s + f.b_st.xyz * s * t + 0.5 * f.b_tt.xyz * t * t);
+    }
+    return array<vec3<f32>, 2>(local, normalize(c + local));
+}
+
+// The tile's mesh for the BLAS: a (TILE_MESH_N + 1)² grid, then skirts
+// hanging below the west, east, south and north edges (so rays can't slip
+// between tiles of different levels).
+@compute @workgroup_size(8, 8)
+fn cs_tile_mesh(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let n1 = TILE_MESH_N + 1u;
+    if (gid.x >= n1 || gid.y >= n1) {
+        return;
+    }
+    let layer = job.slots.x;
+    let texel = vec2<i32>(gid.xy) * TILE_MESH_STEP + TILE_APRON;
+    let h = textureLoad(tile_height, texel, layer).x;
+    let pu = tile_mesh_point(gid.x, gid.y);
+    let v = pu[0] + h * pu[1];
+    let base = layer * TILE_MESH_VERTS;
+    tile_vertices[base + gid.y * n1 + gid.x] = vec4<f32>(v, 0.0);
+    // Skirts: deep enough to cover the steps between levels.
+    let skirt = v - 8.0 * tile_spacing(job.tile.y) * f32(TILE_MESH_STEP) * pu[1];
+    let grid = n1 * n1;
+    if (gid.x == 0u) {
+        tile_vertices[base + grid + gid.y] = vec4<f32>(skirt, 0.0);
+    }
+    if (gid.x == TILE_MESH_N) {
+        tile_vertices[base + grid + n1 + gid.y] = vec4<f32>(skirt, 0.0);
+    }
+    if (gid.y == 0u) {
+        tile_vertices[base + grid + 2u * n1 + gid.x] = vec4<f32>(skirt, 0.0);
+    }
+    if (gid.y == TILE_MESH_N) {
+        tile_vertices[base + grid + 3u * n1 + gid.x] = vec4<f32>(skirt, 0.0);
     }
 }

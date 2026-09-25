@@ -735,7 +735,7 @@ mod tests {
         let probe = Probe::new(&gpu.device);
         let (site, _) = find_island(&world, &sys, i, &probe, &gpu).unwrap();
         let anchor = Anchor::new(vec3::scale(site, planet.radius_km), tilegen::octaves(planet.radius_km, planet.seed));
-        let mut tile_gen = TileGen::new(&gpu.device);
+        let mut tile_gen = TileGen::new(&gpu.device, false);
         let target = TileId::containing(site, 16);
         let east = target.neighbour(Side::East);
         let mut tiles = Vec::new();
@@ -799,5 +799,66 @@ mod tests {
         assert!(edge < 1e-6, "{edge} km");
         let (lo, hi) = ht.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(l, h), &v| (l.min(v), h.max(v)));
         println!("level 16 tile at the island: {lo:.4} to {hi:.4} km");
+    }
+
+    /// The terrain on the ray-tracing hardware, from eye height at the
+    /// island: rays down land on the tile's own height, rays up miss. Needs
+    /// a GPU with ray queries, so it's run by hand:
+    /// `cargo test -p desktop --release -- --ignored --nocapture rays`.
+    #[test]
+    #[ignore = "needs a GPU with ray queries"]
+    fn terrain_rays_on_the_gpu() {
+        use render_hq::terrain::field::TerrainField;
+        use render_hq::terrain::rt;
+        use render_hq::terrain::tilegen::TileGen;
+        let world = crate::world(384);
+        let (n, cap) = (world.cluster.len() as u32, world.cluster.history.capacity() as u32);
+        let gpu = pollster::block_on(Gpu::new(crate::instance(), None, (64, 64), n, cap)).unwrap();
+        assert!(gpu.device.features().contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY), "no ray queries");
+        let (sys, i) = find_planet(&world, KindFilter::Kind(PlanetKind::Ocean)).unwrap();
+        let planet = &sys.planets[i];
+        let probe = Probe::new(&gpu.device);
+        let (site, _) = find_island(&world, &sys, i, &probe, &gpu).unwrap();
+        let ground = probe.sample(&gpu.device, &gpu.queue, planet, &[site], 0.001)[0].solid_km;
+        let eye = vec3::scale(site, planet.radius_km + ground + 0.0017);
+        let mut field = TerrainField::new(&gpu.device, true);
+        for _ in 0..120 {
+            field.update(&gpu.device, &gpu.queue, ((0, 0, i), planet), eye, 1e-3, None);
+        }
+        let s = field.stats;
+        println!("{} tiles drawn, finest level {}, {} standing in", field.drawn.len(), s.finest, s.standing_in);
+        let accel = field.tile_gen.accel.as_ref().unwrap();
+        let from = vec3::sub(eye, field.anchor_km().unwrap());
+        let down = vec3::scale(site, -1.0);
+        let east = vec3::normalize(vec3::cross([0.0, 0.0, 1.0], site));
+        let north = vec3::cross(site, east);
+        let mut rays = vec![(from, down, 1.0), (from, site, 1.0)];
+        for k in 0..8 {
+            let a = k as f64 * std::f64::consts::FRAC_PI_4;
+            let level = vec3::add(vec3::scale(east, a.cos()), vec3::scale(north, a.sin()));
+            rays.push((from, vec3::normalize(vec3::axpy(level, -0.02, site)), 50.0));
+        }
+        let hits = accel.cast(&gpu.device, &gpu.queue, &rays);
+
+        // Down: the hit is on the tile's surface under the eye.
+        let hit = hits[0].expect("the ground below");
+        let heights = field.tile_gen.read_heights(&gpu.device, &gpu.queue, hit.layer);
+        let [x, y] = rt::st_texel(hit.st);
+        let (i0, j0) = (x.floor() as i32 - 2, y.floor() as i32 - 2);
+        let (fx, fy) = (x.fract(), y.fract());
+        let h = |a: i32, b: i32| TileGen::at(&heights, a, b);
+        let tile_h = (h(i0, j0) * (1.0 - fx) + h(i0 + 1, j0) * fx) * (1.0 - fy)
+            + (h(i0, j0 + 1) * (1.0 - fx) + h(i0 + 1, j0 + 1) * fx) * fy;
+        let expected = (ground + 0.0017 - tile_h as f64) * 1000.0;
+        println!("down: {:.4} m (tile surface {:.4} m below the eye)", hit.t_km * 1000.0, expected);
+        assert!((hit.t_km as f64 * 1000.0 - expected).abs() < 0.01, "{} m vs {expected} m", hit.t_km * 1000.0);
+        assert!(hits[1].is_none(), "a ray up hit {:?}", hits[1]);
+        for (k, h) in hits[2..].iter().enumerate() {
+            println!(
+                "towards {:3}°, 1.1° down: {}",
+                45 * k,
+                h.map_or("nothing within 50 km".into(), |h| format!("{:.1} m", h.t_km * 1000.0))
+            );
+        }
     }
 }

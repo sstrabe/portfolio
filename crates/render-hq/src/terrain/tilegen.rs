@@ -18,11 +18,14 @@
 use super::anchor::{Anchor, OctaveGpu};
 use super::atlas::Atlas;
 use super::maps::MapKey;
+use super::rt::{MESH_N, TerrainAccel};
 use super::tiles::{MAX_LEVEL, TILE_SAMPLES, TileId};
 use crate::shaders;
 use bytemuck::{Pod, Zeroable};
 use kerr::planets::Planet;
 use kerr::vec3::{self, V3};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Tiles from this level are generated from the expansion.
 pub const EXPANDED_FROM: u8 = 12;
@@ -125,7 +128,9 @@ struct JobGpu {
     tile: [u32; 4],
     /// layer, parent's layer, 1 to refine the parent, unused
     slots: [u32; 4],
-    pad: [u32; 32],
+    /// Unit direction of the tile's centre, planet radius (km).
+    centre: [f32; 4],
+    pad: [u32; 28],
 }
 
 /// What the tiles are of: a planet (identified by `key`) and the anchor of
@@ -147,14 +152,33 @@ pub struct TileGen {
     params: wgpu::Buffer,
     jobs: wgpu::Buffer,
     pipeline: wgpu::ComputePipeline,
+    mesh_pipeline: wgpu::ComputePipeline,
     bind_group: wgpu::BindGroup,
     pub atlas: Atlas,
+    /// The tiles' meshes as BLASes, with ray-tracing hardware.
+    pub accel: Option<TerrainAccel>,
     /// The planet the atlas holds.
     planet: Option<MapKey>,
+    /// Per layer: its heights (lowest, highest; km) as last read back.
+    ranges: Vec<Option<(f64, f64)>>,
+    /// Per layer: bumped each time it's generated, so a read-back begun
+    /// before doesn't overwrite the new tile's range with the old one's.
+    stamps: Vec<u32>,
+    ranges_dirty: bool,
+    range_readback: wgpu::Buffer,
+    /// The stamps when the read-back in flight was copied.
+    readback_stamps: Vec<u32>,
+    readback_state: Arc<AtomicU8>,
 }
 
+/// States of the ranges' read-back.
+const IDLE: u8 = 0;
+const IN_FLIGHT: u8 = 1;
+const READY: u8 = 2;
+
 impl TileGen {
-    pub fn new(device: &wgpu::Device) -> Self {
+    /// `rt`: build the tiles' BLASes for hardware ray queries.
+    pub fn new(device: &wgpu::Device, rt: bool) -> Self {
         let layers = ATLAS_LAYERS.min(device.limits().max_texture_array_layers);
         let array = |label, format| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -200,6 +224,16 @@ impl TileGen {
             },
             count: None,
         };
+        let storage_buffer = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tile gen"),
             entries: &[
@@ -207,18 +241,13 @@ impl TileGen {
                 uniform(2, true),
                 storage_texture(3, wgpu::TextureFormat::R32Float),
                 storage_texture(4, wgpu::TextureFormat::R32Uint),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
+                storage_buffer(5),
+                storage_buffer(6),
             ],
         });
+        let accel = rt.then(|| TerrainAccel::new(device, layers));
+        // Without ray queries the mesh has nowhere to go.
+        let no_mesh = (!rt).then(|| buffer("no terrain mesh", 16, U::STORAGE));
         let view = |t: &wgpu::Texture| {
             t.create_view(&wgpu::TextureViewDescriptor {
                 dimension: Some(wgpu::TextureViewDimension::D2Array),
@@ -242,6 +271,13 @@ impl TileGen {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&height_view) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&material_view) },
                 wgpu::BindGroupEntry { binding: 5, resource: range.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: accel.as_ref().map_or_else(
+                        || no_mesh.as_ref().map(|b| b.as_entire_binding()).expect("a buffer without rt"),
+                        |a| a.vertices.as_entire_binding(),
+                    ),
+                },
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -253,15 +289,37 @@ impl TileGen {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("tile gen"),
-            layout: Some(&pipeline_layout),
-            module: &module,
-            entry_point: Some("cs_tile_gen"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-        Self { height, material, range, params, jobs, pipeline, bind_group, atlas: Atlas::new(layers), planet: None }
+        let entry = |label, name| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                module: &module,
+                entry_point: Some(name),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        };
+        let pipeline = entry("tile gen", "cs_tile_gen");
+        let mesh_pipeline = entry("tile mesh", "cs_tile_mesh");
+        Self {
+            height,
+            material,
+            range,
+            params,
+            jobs,
+            pipeline,
+            mesh_pipeline,
+            bind_group,
+            atlas: Atlas::new(layers),
+            accel,
+            planet: None,
+            ranges: vec![None; layers as usize],
+            stamps: vec![0; layers as usize],
+            ranges_dirty: false,
+            range_readback: buffer("tile ranges read-back", layers as u64 * 8, U::MAP_READ | U::COPY_DST),
+            readback_stamps: vec![0; layers as usize],
+            readback_state: Arc::new(AtomicU8::new(IDLE)),
+        }
     }
 
     /// Generate `tiles` of `surface` (a new planet empties the atlas):
@@ -323,11 +381,19 @@ impl TileGen {
                 frame: if refine { frame(t, planet.radius_km, anchor.origin_km) } else { TileFrameGpu::default() },
                 tile: [t.face as u32, t.level as u32, t.x, t.y],
                 slots: [layer, parent_layer, refine as u32, 0],
-                pad: [0; 32],
+                centre: {
+                    let c = t.centre();
+                    [c[0] as f32, c[1] as f32, c[2] as f32, planet.radius_km as f32]
+                },
+                pad: [0; 28],
             });
             done.push((t, layer));
         }
         for (i, job) in jobs.iter().enumerate() {
+            let layer = job.slots[0] as usize;
+            self.stamps[layer] = self.stamps[layer].wrapping_add(1);
+            self.ranges[layer] = None;
+            self.ranges_dirty = true;
             queue.write_buffer(&self.jobs, i as u64 * JOB_STRIDE, bytemuck::bytes_of(job));
             queue.write_buffer(&self.range, job.slots[0] as u64 * 8, bytemuck::cast_slice(&[i32::MAX, i32::MIN]));
         }
@@ -346,10 +412,69 @@ impl TileGen {
             for i in 0..jobs.len() {
                 pass.set_bind_group(0, &self.bind_group, &[(i as u64 * JOB_STRIDE) as u32]);
                 pass.dispatch_workgroups(groups, groups, 1);
+                if self.accel.is_some() {
+                    // The tile's mesh from the heights just written.
+                    pass.set_pipeline(&self.mesh_pipeline);
+                    let mesh_groups = (MESH_N + 1).div_ceil(8);
+                    pass.dispatch_workgroups(mesh_groups, mesh_groups, 1);
+                    pass.set_pipeline(&self.pipeline);
+                }
             }
+        }
+        if let Some(accel) = &mut self.accel {
+            let layers: Vec<u32> = jobs.iter().map(|j| j.slots[0]).collect();
+            accel.build_blas(device, &mut enc, &layers);
         }
         queue.submit([enc.finish()]);
         done
+    }
+
+    /// The heights (lowest, highest; km from the datum) of `t`, or of its
+    /// nearest ancestor whose range is known.
+    pub fn band(&self, t: TileId) -> Option<(f64, f64)> {
+        let mut at = Some(t);
+        while let Some(a) = at {
+            if let Some(range) = self.atlas.peek(a).and_then(|layer| self.ranges[layer as usize]) {
+                return Some(range);
+            }
+            at = a.parent();
+        }
+        None
+    }
+
+    /// Read the tiles' height ranges back without stalling: take a finished
+    /// read-back, or start one when tiles have been generated since.
+    pub fn poll_ranges(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let _ = device.poll(wgpu::PollType::Poll);
+        match self.readback_state.load(Ordering::Acquire) {
+            READY => {
+                if let Ok(data) = self.range_readback.slice(..).get_mapped_range() {
+                    let mm: &[i32] = bytemuck::cast_slice(&data);
+                    for (layer, range) in self.ranges.iter_mut().enumerate() {
+                        if self.stamps[layer] == self.readback_stamps[layer] {
+                            let (lo, hi) = (mm[2 * layer], mm[2 * layer + 1]);
+                            *range = (lo <= hi).then_some((lo as f64 * 1e-6, hi as f64 * 1e-6));
+                        }
+                    }
+                }
+                self.range_readback.unmap();
+                self.readback_state.store(IDLE, Ordering::Release);
+            }
+            IDLE if self.ranges_dirty => {
+                let mut enc =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("tile ranges") });
+                enc.copy_buffer_to_buffer(&self.range, 0, &self.range_readback, 0, self.range.size());
+                queue.submit([enc.finish()]);
+                self.readback_stamps.clone_from(&self.stamps);
+                self.ranges_dirty = false;
+                self.readback_state.store(IN_FLIGHT, Ordering::Release);
+                let state = self.readback_state.clone();
+                self.range_readback.slice(..).map_async(wgpu::MapMode::Read, move |result| {
+                    state.store(if result.is_ok() { READY } else { IDLE }, Ordering::Release);
+                });
+            }
+            _ => {}
+        }
     }
 
     /// A layer's heights (km), row by row, `TILE_TEXELS`² (blocking: for
@@ -460,6 +585,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<TileFrameGpu>(), 96);
         assert_eq!(std::mem::size_of::<JobGpu>() as u64, JOB_STRIDE);
         assert_eq!(std::mem::offset_of!(JobGpu, slots), 112);
+        assert_eq!(std::mem::offset_of!(JobGpu, centre), 128);
         assert_eq!(std::mem::size_of::<ParamsGpu>(), 32 + 16 * 32);
         assert_eq!(TILE_TEXELS, 133);
     }

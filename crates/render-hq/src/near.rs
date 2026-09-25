@@ -274,7 +274,8 @@ pub struct NearField {
 const MAPS_RANGE_RADII: f64 = 50.0;
 
 impl NearField {
-    pub fn new(device: &wgpu::Device) -> Self {
+    /// `rt`: the terrain gets BLASes for hardware ray queries.
+    pub fn new(device: &wgpu::Device, rt: bool) -> Self {
         let storage = |binding| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -329,7 +330,7 @@ impl NearField {
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&maps.sampler) },
             ],
         });
-        let terrain = crate::terrain::field::TerrainField::new(device);
+        let terrain = crate::terrain::field::TerrainField::new(device, rt);
         Self { layout, bind_group, systems, planets, selection: Selection::default(), maps, terrain }
     }
 
