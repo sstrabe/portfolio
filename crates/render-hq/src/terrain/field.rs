@@ -60,9 +60,10 @@ pub struct TerrainField {
     plant_age: u32,
 }
 
-/// Plants are placed again when the eye has moved this far (km), and every
-/// so many frames as the ground under them refines.
-const REPLANT_KM: f64 = 0.02;
+/// Plants are placed again when the eye has moved this far (km; the
+/// grass reaches 25 m), and every so many frames as the ground under them
+/// refines.
+const REPLANT_KM: f64 = 0.004;
 const REPLANT_FRAMES: u32 = 30;
 
 impl TerrainField {
@@ -157,7 +158,7 @@ impl TerrainField {
             if let Some((sites, pending)) = &self.placing
                 && let Some(hits) = pending.take(device)
             {
-                self.plants = super::plants::palms_from_hits(sites, &hits, r);
+                self.plants = super::plants::plants_from_hits(sites, &hits, r);
                 self.placing = None;
             }
             self.plant_age += 1;
@@ -167,7 +168,7 @@ impl TerrainField {
             }
             let moved = self.plants_at.is_none_or(|(k, at)| k != key || vec3::norm(vec3::sub(at, eye_km)) > REPLANT_KM);
             if self.placing.is_none() && accel.instances > 0 && (moved || self.plant_age >= REPLANT_FRAMES) {
-                let sites = super::plants::palm_sites(planet, eye_km);
+                let sites = super::plants::plant_sites(planet, eye_km);
                 let rays = super::plants::rays_from(&super::plants::site_points(&sites, r), anchor.origin_km);
                 self.placing = Some((sites, accel.cast_submit(device, queue, &rays)));
                 self.plants_at = Some((key, eye_km));

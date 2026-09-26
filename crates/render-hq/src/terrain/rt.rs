@@ -41,9 +41,10 @@ pub const PLANT_MASK: u8 = 0x02;
 /// triangle in the normals table. Must match `TR_PLANT_FLAG`.
 pub const PLANT_FLAG: u32 = 1 << 23;
 /// Plant instances in the TLAS at most.
-pub const MAX_PLANTS: u32 = 2048;
-/// Palm variants (seeds 1…).
+pub const MAX_PLANTS: u32 = 4096;
+/// Palm variants (seeds 1…), then tufts of grass.
 pub const PALM_VARIANTS: u32 = 4;
+pub const TUFT_VARIANTS: u32 = 2;
 
 /// A plant to place: its variant, its foot (body-fixed km from the
 /// planet's centre), up there, and the horizontal way it leans.
@@ -72,8 +73,10 @@ impl PlantGeometry {
     fn new(device: &wgpu::Device) -> Self {
         let (mut positions, mut indices, mut normals) = (Vec::new(), Vec::new(), Vec::new());
         let (mut ranges, mut first_triangle) = (Vec::new(), Vec::new());
-        for v in 0..PALM_VARIANTS {
-            let m = super::plants::palm(v as u64 + 1);
+        let meshes = (0..PALM_VARIANTS)
+            .map(|v| super::plants::palm(v as u64 + 1))
+            .chain((0..TUFT_VARIANTS).map(|v| super::plants::grass_tuft(v as u64 + 1)));
+        for m in meshes {
             ranges.push([
                 positions.len() as u32,
                 m.positions.len() as u32,

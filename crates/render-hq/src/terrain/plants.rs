@@ -24,6 +24,7 @@ pub struct PlantMesh {
 pub const BARK: f32 = 0.0;
 pub const LEAF: f32 = 1.0;
 pub const DEAD_LEAF: f32 = 2.0;
+pub const GRASS: f32 = 3.0;
 
 impl PlantMesh {
     fn vertex(&mut self, p: V3) -> u32 {
@@ -129,6 +130,37 @@ pub fn palm(seed: u64) -> PlantMesh {
     m
 }
 
+/// A tuft of grass, one of a family by `seed`: some twenty blades, 25–55 cm,
+/// springing from the foot and arching out, tapering to their tips.
+pub fn grass_tuft(seed: u64) -> PlantMesh {
+    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x6a55);
+    let mut m = PlantMesh::default();
+    let blades = 18 + (rng.next() * 8.0) as usize;
+    for _ in 0..blades {
+        let az = rng.range(0.0, std::f64::consts::TAU);
+        let dir_h = [az.cos(), az.sin(), 0.0];
+        let side = [-az.sin(), az.cos(), 0.0];
+        let (len, lean, width) = (rng.range(0.25, 0.55), rng.range(0.15, 0.6), rng.range(0.008, 0.014));
+        let root = vec3::scale(dir_h, rng.range(0.0, 0.05));
+        let segs = 3;
+        let mut prev: Option<[u32; 2]> = None;
+        for i in 0..=segs {
+            let s = i as f64 / segs as f64;
+            // Arching: leaning further out towards the tip.
+            let ang = std::f64::consts::FRAC_PI_2 - lean - 0.6 * s * s;
+            let p =
+                vec3::add(root, [dir_h[0] * len * s * ang.cos(), dir_h[1] * len * s * ang.cos(), len * s * ang.sin()]);
+            let w = width * (1.0 - 0.85 * s);
+            let ids = [m.vertex(vec3::axpy(p, w, side)), m.vertex(vec3::axpy(p, -w, side))];
+            if let Some(q) = prev {
+                m.quad(q[0], q[1], ids[1], ids[0], GRASS);
+            }
+            prev = Some(ids);
+        }
+    }
+    m
+}
+
 /// A frond from `base`: its midrib leaves along horizontal `dir_h` at
 /// `rise` (rad above level), `len` m long, bending down by `droop`; its
 /// blade is folded along the midrib (a shallow V) and tapers to the tip.
@@ -171,22 +203,67 @@ pub const PALM_CELL_M: f64 = 9.0;
 /// Out to this far from the eye (km).
 pub const PALM_RANGE_KM: f64 = 0.4;
 
-/// A place a palm might stand: body-fixed unit direction, variant, and its
-/// lean (rad about up) and the cell's two random numbers for thinning.
+/// A place a plant might stand: body-fixed unit direction, what (palm or
+/// grass), variant, its lean (rad about up) and a random number for
+/// thinning.
 #[derive(Clone, Copy, Debug)]
 pub struct Candidate {
     pub dir: V3,
+    pub grass: bool,
     pub variant: u32,
     pub yaw: f64,
     pub keep: f64,
 }
 
-/// The face-grid level whose tiles are about [`PALM_CELL_M`] across.
-pub fn palm_cell_level(radius_km: f64) -> u8 {
+/// Grass grows in cells about this big (m), out to this far from the eye
+/// (km), thinning over its outer third.
+pub const GRASS_CELL_M: f64 = 1.3;
+pub const GRASS_RANGE_KM: f64 = 0.025;
+
+/// Candidate tufts of grass around body-fixed `eye_km` (as
+/// [`palm_candidates`], denser and nearer).
+pub fn grass_candidates(eye_km: V3, radius_km: f64, seed: u32) -> Vec<Candidate> {
+    use super::tiles::TileId;
+    let level = cell_level(radius_km, GRASS_CELL_M);
+    let dir = vec3::normalize(eye_km);
+    let here = TileId::containing(dir, level);
+    let n = 1i64 << level;
+    let reach = (GRASS_RANGE_KM * 1000.0 / GRASS_CELL_M).ceil() as i64 + 1;
+    let mut out = Vec::new();
+    for dy in -reach..=reach {
+        for dx in -reach..=reach {
+            let (x, y) = (here.x as i64 + dx, here.y as i64 + dy);
+            if x < 0 || y < 0 || x >= n || y >= n {
+                continue;
+            }
+            let cell = TileId { face: here.face, level, x: x as u32, y: y as u32 };
+            let mut rng =
+                Rng((x as u64) << 32 ^ y as u64 ^ (here.face as u64) << 60 ^ (seed as u64).wrapping_mul(0x51ed_2705));
+            let (s, t) = (rng.range(0.05, 0.95), rng.range(0.05, 0.95));
+            let d = cell.direction(s, t);
+            let far = vec3::norm(vec3::sub(vec3::scale(d, radius_km), vec3::scale(dir, radius_km))) / GRASS_RANGE_KM;
+            // Thinning out over the outer third.
+            if rng.next() > 0.85 * (3.0 * (1.0 - far)).clamp(0.0, 1.0) {
+                continue;
+            }
+            let variant = super::rt::PALM_VARIANTS + (rng.next() * super::rt::TUFT_VARIANTS as f64) as u32;
+            out.push(Candidate { dir: d, grass: true, variant, yaw: rng.range(0.0, std::f64::consts::TAU), keep: 0.0 });
+        }
+    }
+    out
+}
+
+/// The face-grid level whose tiles are about `cell_m` across.
+fn cell_level(radius_km: f64, cell_m: f64) -> u8 {
     let tile_m = |l: u8| radius_km * std::f64::consts::FRAC_PI_2 / (1u64 << l) as f64 * 1000.0;
     (0..=super::tiles::MAX_LEVEL)
-        .min_by(|&a, &b| (tile_m(a) / PALM_CELL_M).ln().abs().total_cmp(&(tile_m(b) / PALM_CELL_M).ln().abs()))
+        .min_by(|&a, &b| (tile_m(a) / cell_m).ln().abs().total_cmp(&(tile_m(b) / cell_m).ln().abs()))
         .unwrap_or(20)
+}
+
+/// The face-grid level whose tiles are about [`PALM_CELL_M`] across.
+pub fn palm_cell_level(radius_km: f64) -> u8 {
+    cell_level(radius_km, PALM_CELL_M)
 }
 
 /// Candidate palms around body-fixed `eye_km` on a planet of
@@ -219,7 +296,8 @@ pub fn palm_candidates(eye_km: V3, radius_km: f64, seed: u32) -> Vec<Candidate> 
             }
             out.push(Candidate {
                 dir: d,
-                variant: (rng.next() * 4.0) as u32,
+                grass: false,
+                variant: (rng.next() * super::rt::PALM_VARIANTS as f64) as u32,
                 yaw: rng.range(0.0, std::f64::consts::TAU),
                 keep: rng.next(),
             });
@@ -234,15 +312,16 @@ pub fn rays_from(points: &[V3], anchor_km: V3) -> Vec<(V3, V3, f64)> {
     points.iter().map(|&p| (vec3::sub(p, anchor_km), vec3::scale(vec3::normalize(p), -1.0), 1.0)).collect()
 }
 
-/// Where palms might stand around body-fixed `eye_km` on a tropical world
-/// with seas (none on others): the candidates in the tropics.
-pub fn palm_sites(planet: &kerr::planets::Planet, eye_km: V3) -> Vec<Candidate> {
+/// Where plants might stand around body-fixed `eye_km` on a living world
+/// (none on others): palms in the tropics, grass anywhere.
+pub fn plant_sites(planet: &kerr::planets::Planet, eye_km: V3) -> Vec<Candidate> {
     let wet = planet.kind == kerr::planets::PlanetKind::Ocean && planet.atmosphere.is_some();
     if !wet {
         return Vec::new();
     }
     let tropics = 30f64.to_radians().sin();
-    palm_candidates(eye_km, planet.radius_km, planet.seed).into_iter().filter(|c| c.dir[2].abs() < tropics).collect()
+    let palms = palm_candidates(eye_km, planet.radius_km, planet.seed).into_iter().filter(|c| c.dir[2].abs() < tropics);
+    palms.chain(grass_candidates(eye_km, planet.radius_km, planet.seed)).collect()
 }
 
 /// Points (body-fixed km) 0.5 km above the datum over `sites`, to cast
@@ -251,10 +330,11 @@ pub fn site_points(sites: &[Candidate], radius_km: f64) -> Vec<V3> {
     sites.iter().map(|c| vec3::scale(c.dir, radius_km + 0.5)).collect()
 }
 
-/// The palms at `sites` whose ground (`hits` of the rays down from
-/// [`site_points`]) is 2.5–35 m above the sea, thinning out inland, each
-/// leaning its way.
-pub fn palms_from_hits(
+/// The plants at `sites` whose ground (`hits` of the rays down from
+/// [`site_points`]) suits them: palms 2.5–35 m above the sea, thinning out
+/// inland; grass above the beach (3.5 m) and below the mountains' bare
+/// heights (1.5 km). Each is turned its way.
+pub fn plants_from_hits(
     sites: &[Candidate],
     hits: &[Option<super::rt::CastHit>],
     radius_km: f64,
@@ -265,8 +345,12 @@ pub fn palms_from_hits(
         .filter_map(|(c, hit)| {
             let ground_km = 0.5 - hit.as_ref()?.t_km as f64;
             let h_m = ground_km * 1000.0;
-            let keep = 0.9 * (1.0 - ((h_m - 8.0) / 27.0).clamp(0.0, 1.0));
-            if !(2.5..35.0).contains(&h_m) || c.keep > keep {
+            let fits = if c.grass {
+                (3.5..1500.0).contains(&h_m)
+            } else {
+                (2.5..35.0).contains(&h_m) && c.keep <= 0.9 * (1.0 - ((h_m - 8.0) / 27.0).clamp(0.0, 1.0))
+            };
+            if !fits {
                 return None;
             }
             let up = c.dir;
@@ -317,5 +401,8 @@ mod tests {
             assert!(p.normals.iter().any(|n| n[3] == BARK) && p.normals.iter().any(|n| n[3] == LEAF));
         }
         assert_ne!(palm(1).extent(), palm(2).extent());
+        let g = grass_tuft(1);
+        let (top, reach) = g.extent();
+        assert!((0.2..0.6).contains(&top) && reach < 0.5 && g.normals.iter().all(|n| n[3] == GRASS), "{top} {reach}");
     }
 }
