@@ -288,6 +288,24 @@ march). The post chain is ~2 ms.
    centre is off screen as sub-pixel (the far field's point-source path)
    while its disc is still partly visible. First step: reproduce headless
    with the planet's centre just outside the frame.
+17. **Bug (owner, 2026-09-26): a landed ship's engine clips into the
+   ground, and the way it just stays still doesn't look realistic.**
+   Screenshot: the rocket stands tilted, its nozzle and fins through the
+   ground. A landed ship keeps whatever attitude it touched down with
+   (`ride_surface` only turns it with the planet) and rests 10 m above
+   the ground at its centre (`LANDED_HEIGHT_KM`), whatever its attitude.
+   The owner's suggestion: after touch-down, turn the ship upright on its
+   tail (up along the local vertical, as a lander would settle), and rest
+   it so the lowest point of the hull (nozzle rim, fin tips) is on the
+   ground (from the mesh's extent along its axis, not a fixed 10 m). Also
+   decide how it should topple or settle on a slope.
+18. **Bug (owner, 2026-09-26): standing still on the ground, the velocity
+   readout shows ~398 m/s.** That's the planet's rotation at the surface:
+   the telemetry's speed (`PlanetTelemetry::speed_km_s`, shown by
+   `hud.rs`) is relative to the planet's non-rotating rest frame (orbital
+   speed). Fix: near the ground (landed, or low in the atmosphere) show the
+   speed relative to the rotating surface, as KSP switches to "surface"
+   mode, and say which one is shown.
 
 ---
 
