@@ -72,6 +72,50 @@ const TILE_MESH_STEP: i32 = 2;
 const TILE_MESH_N: u32 = 64u;
 const TILE_MESH_VERTS: u32 = 4485u;
 
+// The regional erosion's square (`terrain/erosion.rs`): unit centre and
+// cell size (km); unit east and cells a side (0: none); unit north. Its
+// height change (km) per cell.
+struct Region {
+    centre: vec4<f32>,
+    east: vec4<f32>,
+    north: vec4<f32>,
+    pad: vec4<f32>,
+}
+@group(0) @binding(7) var<uniform> region: Region;
+@group(0) @binding(8) var<storage, read> region_delta: array<f32>;
+
+// The erosion's height change (km) at body-fixed `q`, bilinear, where the
+// square covers it and the sampling (`lod`, km) is fine enough to hold its
+// valleys.
+fn tile_region_delta(q: vec3<f32>, lod: f32) -> f32 {
+    let n = region.east.w;
+    let cell = region.centre.w;
+    if (n < 2.0 || lod > 8.0 * cell) {
+        return 0.0;
+    }
+    let c = region.centre.xyz;
+    let cq = dot(q, c);
+    if (cq < 0.9) {
+        return 0.0;
+    }
+    // Onto the square's plane (as the bake laid its cells).
+    let p = (q / cq - c) * tg.radius / cell;
+    let x = dot(p, region.east.xyz) + 0.5 * n - 0.5;
+    let y = dot(p, region.north.xyz) + 0.5 * n - 0.5;
+    if (x < 0.0 || y < 0.0 || x >= n - 1.0 || y >= n - 1.0) {
+        return 0.0;
+    }
+    let ni = i32(n);
+    let b = vec2<i32>(i32(floor(x)), i32(floor(y)));
+    let f = vec2<f32>(x, y) - vec2<f32>(b);
+    let k = b.y * ni + b.x;
+    let d00 = region_delta[k];
+    let d10 = region_delta[k + 1];
+    let d01 = region_delta[k + ni];
+    let d11 = region_delta[k + ni + 1];
+    return mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y);
+}
+
 // Nominal sample spacing (km) at a level.
 fn tile_spacing(level: u32) -> f32 {
     return tg.radius * 1.5707963 / (f32(1u << level) * TILE_SAMPLES);
@@ -180,6 +224,13 @@ fn cs_tile_gen(@builtin(global_invocation_id) gid: vec3<u32>) {
         let lod = 2.0 * spacing;
         let mac = terrain_macro(tp, q, lod);
         h = terrain_solid(tp, q, mac, lod);
+        // The regional erosion, inland: nothing below 15 m (coasts and
+        // beaches stay put, exactly, whatever the neighbouring cells did),
+        // and never cutting land below 40% of its height.
+        if (h > 0.015) {
+            let e = tile_region_delta(q, lod);
+            h += max(e, -0.6 * h) * smoothstep(0.015, 0.06, h);
+        }
         m = vec4<f32>(saturate(mac.y), saturate(mac.z), saturate(mac.w), smoothstep(-0.3, 0.2, mac.x));
     } else {
         // Refine: the parent upsampled, plus this level's octave.

@@ -108,6 +108,14 @@ impl TerrainField {
             Some((k, a)) => *k != key || vec3::norm(vec3::sub(a.origin_km, eye_km)) > REANCHOR_KM,
             None => true,
         };
+        // Erode the land around the eye (again when it has travelled far);
+        // tiles made before don't have it.
+        if self.tile_gen.region.wanted(key, planet, eye_km) {
+            self.tile_gen.region.bake(device, queue, key, planet, eye_km);
+            self.tile_gen.flush();
+            self.ground = GroundCache::default();
+            self.plants_at = None;
+        }
         if reanchor {
             let octaves = tilegen::octaves(planet.radius_km, planet.seed);
             self.anchor = Some((key, Anchor::new(eye_km, octaves)));

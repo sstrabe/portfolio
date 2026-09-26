@@ -9,6 +9,7 @@ pub mod anchor;
 pub mod atlas;
 pub mod biomes;
 pub mod cube;
+pub mod erosion;
 pub mod field;
 pub mod ground;
 pub mod maps;

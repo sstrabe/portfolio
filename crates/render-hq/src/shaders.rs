@@ -127,6 +127,15 @@ pub fn tile_gen() -> String {
     s
 }
 
+/// Regional erosion (`terrain/erosion.rs`). Built on the Kerr prelude
+/// alone, binding its own resources in group 0.
+pub fn erosion() -> String {
+    let mut s = String::from(::shaders::COMMON);
+    s.push('\n');
+    s.push_str(wgsl!("cube.wgsl", "terrain.wgsl", "erosion.wgsl"));
+    s
+}
+
 /// Rays against the terrain's TLAS, read back (`terrain/rt.rs`).
 pub fn tile_cast() -> String {
     let mut s = String::from("enable wgpu_ray_query;\n");
@@ -143,9 +152,10 @@ pub fn climate() -> String {
     s
 }
 
-pub fn all() -> [(&'static str, String); 16] {
+pub fn all() -> [(&'static str, String); 17] {
     [
         ("tile_gen", tile_gen()),
+        ("erosion", erosion()),
         ("tile_cast", tile_cast()),
         ("climate", climate()),
         ("probe", probe()),

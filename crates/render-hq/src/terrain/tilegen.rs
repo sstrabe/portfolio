@@ -163,6 +163,8 @@ pub struct TileGen {
     pub atlas: Atlas,
     /// The tiles' meshes as BLASes, with ray-tracing hardware.
     pub accel: Option<TerrainAccel>,
+    /// The regional erosion the coarse tiles add.
+    pub region: super::erosion::RegionErosion,
     /// The planet the atlas holds.
     planet: Option<MapKey>,
     /// Per layer: its heights (lowest, highest; km) as last read back.
@@ -249,8 +251,21 @@ impl TileGen {
                 storage_texture(4, wgpu::TextureFormat::R32Uint),
                 storage_buffer(5),
                 storage_buffer(6),
+                // The regional erosion: its square and height change.
+                uniform(7, false),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
+        let region = super::erosion::RegionErosion::new(device);
         let accel = rt.then(|| TerrainAccel::new(device, layers));
         // Without ray queries the mesh has nowhere to go.
         let no_mesh = (!rt).then(|| buffer("no terrain mesh", 16, U::STORAGE));
@@ -284,6 +299,8 @@ impl TileGen {
                         |a| a.vertices.as_entire_binding(),
                     ),
                 },
+                wgpu::BindGroupEntry { binding: 7, resource: region.region.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 8, resource: region.delta.as_entire_binding() },
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -318,6 +335,7 @@ impl TileGen {
             bind_group,
             atlas: Atlas::new(layers),
             accel,
+            region,
             planet: None,
             ranges: vec![None; layers as usize],
             stamps: vec![0; layers as usize],
@@ -328,6 +346,12 @@ impl TileGen {
             readback_stamps: vec![0; layers as usize],
             readback_state: Arc::new(AtomicU8::new(IDLE)),
         }
+    }
+
+    /// Forget every tile (the terrain has changed under them): the next
+    /// `generate` starts an empty atlas.
+    pub fn flush(&mut self) {
+        self.planet = None;
     }
 
     /// Generate `tiles` of `surface` (a new planet empties the atlas):
