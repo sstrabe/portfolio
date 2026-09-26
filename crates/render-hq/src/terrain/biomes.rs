@@ -1,9 +1,9 @@
 //! Biomes: what the land of a living world is made of, as a table.
 //!
-//! Each biome says where it is, as soft windows on six things known at
+//! Each biome says where it is, as soft windows on seven things known at
 //! every point (temperature, moisture from the baked climate, height above
-//! the sea, steepness, ruggedness, and whether the rock is basalt or
-//! granite), and what it is: its spectral reflectance, the scanned ground
+//! the sea, steepness, ruggedness, whether the rock is basalt or granite,
+//! and the distance from the shore), and what it is: its spectral reflectance, the scanned ground
 //! materials ([`super::materials`]) its surface shows, and how much of the
 //! ground its plants cover. The shader weighs every biome by the product of
 //! its windows times its precedence and blends them, so biomes shade into
@@ -137,6 +137,9 @@ pub struct Biome {
     pub ruggedness: Window,
     /// Rock type, 0 granite to 1 basalt.
     pub basalt: Window,
+    /// Distance from the shore (m), where the regional erosion's square
+    /// knows it (0 elsewhere, so beaches there go by height alone).
+    pub shore: Window,
     /// Spectral reflectance (the ground and its plants, as seen from above).
     pub albedo: fn() -> Spectrum,
     /// Scanned ground materials its surface shows, by slot name, with
@@ -146,6 +149,13 @@ pub struct Biome {
     pub cover: f32,
     /// Precedence over biomes whose windows overlap it.
     pub weight: f32,
+}
+
+impl Biome {
+    /// Its windows, in the shader's order.
+    pub fn windows(&self) -> [Window; WINDOWS] {
+        [self.temperature, self.moisture, self.height, self.steepness, self.ruggedness, self.basalt, self.shore]
+    }
 }
 
 const ANY: Window = Window::ANY;
@@ -162,6 +172,7 @@ pub static BIOMES: &[Biome] = &[
         steepness: ANY,
         ruggedness: ANY,
         basalt: ANY,
+        shore: ANY,
         // Seen from above: mostly canopy, a little soil between.
         albedo: || mix(soil(0.3), vegetation(0.1), 0.85),
         ground: &[("SOIL", 1.0)],
@@ -176,6 +187,7 @@ pub static BIOMES: &[Biome] = &[
         steepness: ANY,
         ruggedness: ANY,
         basalt: ANY,
+        shore: ANY,
         // Olive-tan: dry grass, scattered trees and bare ground.
         albedo: || mix(soil(0.65), vegetation(0.7), 0.45),
         ground: &[("SOIL", 1.0)],
@@ -190,6 +202,7 @@ pub static BIOMES: &[Biome] = &[
         steepness: ANY,
         ruggedness: ANY,
         basalt: ANY,
+        shore: ANY,
         albedo: || mix(soil(0.85), vegetation(0.9), 0.2),
         ground: &[("SOIL", 0.7), ("SAND", 0.3)],
         cover: 0.2,
@@ -203,6 +216,7 @@ pub static BIOMES: &[Biome] = &[
         steepness: ANY,
         ruggedness: ANY,
         basalt: ANY,
+        shore: ANY,
         albedo: || soil(1.0),
         ground: &[("SAND", 0.6), ("SOIL", 0.4)],
         cover: 0.02,
@@ -216,6 +230,7 @@ pub static BIOMES: &[Biome] = &[
         steepness: ANY,
         ruggedness: ANY,
         basalt: ANY,
+        shore: ANY,
         albedo: || mix(vegetation(0.6), soil(0.4), 0.5),
         ground: &[("SOIL", 1.0)],
         cover: 0.5,
@@ -229,6 +244,7 @@ pub static BIOMES: &[Biome] = &[
         steepness: ANY,
         ruggedness: ANY,
         basalt: ANY,
+        shore: ANY,
         albedo: snow,
         ground: &[],
         cover: 0.0,
@@ -242,6 +258,7 @@ pub static BIOMES: &[Biome] = &[
         steepness: ANY,
         ruggedness: Window::above(0.85, 0.1),
         basalt: Window::above(0.5, 0.2),
+        shore: ANY,
         albedo: basalt,
         ground: &[("ROCK", 1.0)],
         cover: 0.0,
@@ -255,6 +272,7 @@ pub static BIOMES: &[Biome] = &[
         steepness: ANY,
         ruggedness: Window::above(0.85, 0.1),
         basalt: Window::below(0.5, 0.2),
+        shore: ANY,
         albedo: granite,
         ground: &[("ROCK", 1.0)],
         cover: 0.0,
@@ -268,6 +286,7 @@ pub static BIOMES: &[Biome] = &[
         steepness: ANY,
         ruggedness: Window::above(0.6, 0.2),
         basalt: ANY,
+        shore: ANY,
         albedo: || mix(granite(), basalt(), 0.4),
         ground: &[("ROCK", 0.7), ("SOIL", 0.3)],
         cover: 0.1,
@@ -281,6 +300,7 @@ pub static BIOMES: &[Biome] = &[
         steepness: Window::above(0.35, 0.1),
         ruggedness: ANY,
         basalt: Window::above(0.5, 0.2),
+        shore: ANY,
         albedo: basalt,
         ground: &[("ROCK", 1.0)],
         cover: 0.0,
@@ -294,6 +314,7 @@ pub static BIOMES: &[Biome] = &[
         steepness: Window::above(0.35, 0.1),
         ruggedness: ANY,
         basalt: Window::below(0.5, 0.2),
+        shore: ANY,
         albedo: granite,
         ground: &[("ROCK", 1.0)],
         cover: 0.0,
@@ -307,6 +328,7 @@ pub static BIOMES: &[Biome] = &[
         steepness: Window::below(0.05, 0.04),
         ruggedness: ANY,
         basalt: ANY,
+        shore: Window::below(60.0, 40.0),
         albedo: beach_sand,
         ground: &[("SAND", 1.0)],
         cover: 0.0,
@@ -320,6 +342,7 @@ pub static BIOMES: &[Biome] = &[
         steepness: Window::below(0.06, 0.04),
         ruggedness: ANY,
         basalt: ANY,
+        shore: Window::below(60.0, 40.0),
         albedo: || scale(beach_sand(), 0.55),
         ground: &[("WET_SAND", 1.0)],
         cover: 0.0,
@@ -333,6 +356,7 @@ pub static BIOMES: &[Biome] = &[
         steepness: Window::below(0.05, 0.04),
         ruggedness: ANY,
         basalt: ANY,
+        shore: Window::below(60.0, 40.0),
         albedo: || mix(granite(), basalt(), 0.5),
         ground: &[("ROCK", 0.5), ("SOIL", 0.5)],
         cover: 0.0,
@@ -343,13 +367,16 @@ pub static BIOMES: &[Biome] = &[
 /// Room in the shaders' biome table.
 pub const MAX_BIOMES: usize = 24;
 
+/// The windows a biome has, in the shader's order.
+pub const WINDOWS: usize = 7;
+
 /// Mirrors `struct Biome` in `planet.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BiomeGpu {
-    /// Temperature, moisture, height, steepness, ruggedness, basalt: lo,
-    /// hi, soft, unused.
-    pub windows: [[f32; 4]; 6],
+    /// Temperature, moisture, height, steepness, ruggedness, basalt, shore:
+    /// lo, hi, soft, unused.
+    pub windows: [[f32; 4]; WINDOWS],
     pub albedo: [f32; BINS],
     /// Share of each ground material, by slot.
     pub ground: [f32; MAX_MATERIALS],
@@ -374,7 +401,7 @@ pub fn table() -> BiomesGpu {
     t.count[0] = BIOMES.len() as u32;
     for (slot, b) in t.biomes.iter_mut().zip(BIOMES) {
         let w = |w: Window| [w.lo, w.hi, w.soft, 0.0];
-        slot.windows = [b.temperature, b.moisture, b.height, b.steepness, b.ruggedness, b.basalt].map(w);
+        slot.windows = b.windows().map(w);
         slot.albedo = (b.albedo)();
         for &(name, share) in b.ground {
             let i = MATERIALS
@@ -399,13 +426,13 @@ mod tests {
         let t = table();
         assert_eq!(t.count[0] as usize, BIOMES.len());
         for b in BIOMES {
-            for w in [b.temperature, b.moisture, b.height, b.steepness, b.ruggedness, b.basalt] {
+            for w in b.windows() {
                 assert!(w.soft > 0.0 && w.lo <= w.hi, "{}", b.name);
             }
             assert!((b.albedo)().iter().all(|&r| (0.0..=1.0).contains(&r)), "{}", b.name);
             assert!(b.weight > 0.0 && (0.0..=1.0).contains(&b.cover), "{}", b.name);
         }
-        assert_eq!(std::mem::size_of::<BiomeGpu>(), 208);
+        assert_eq!(std::mem::size_of::<BiomeGpu>(), 224);
     }
 
     /// The twins match the shader's recipes at a few bins (values worked
@@ -423,18 +450,19 @@ mod tests {
     /// A beach point is mostly beach; the forest behind it mostly forest.
     #[test]
     fn beach_beats_forest_where_both_fit() {
-        let weight = |b: &Biome, v: [f32; 6]| {
-            let ws = [b.temperature, b.moisture, b.height, b.steepness, b.ruggedness, b.basalt];
-            b.weight * ws.iter().zip(v).map(|(w, x)| w.at(x)).product::<f32>()
-        };
-        let share = |name: &str, v: [f32; 6]| {
+        let weight =
+            |b: &Biome, v: [f32; WINDOWS]| b.weight * b.windows().iter().zip(v).map(|(w, x)| w.at(x)).product::<f32>();
+        let share = |name: &str, v: [f32; WINDOWS]| {
             let total: f32 = BIOMES.iter().map(|b| weight(b, v)).sum();
             BIOMES.iter().filter(|b| b.name == name).map(|b| weight(b, v)).sum::<f32>() / total
         };
-        // 298 K, wet, 2 m up, level, lowland, basalt.
-        assert!(share("sand beach", [298.0, 0.8, 2.0, 0.01, 0.1, 0.9]) > 0.9);
-        assert!(share("forest", [298.0, 0.8, 40.0, 0.05, 0.1, 0.9]) > 0.9);
-        assert!(share("wet sand", [298.0, 0.8, 0.2, 0.01, 0.1, 0.9]) > 0.8);
-        assert!(share("basalt cliffs", [298.0, 0.8, 80.0, 0.6, 0.3, 0.9]) > 0.7);
+        // 298 K, wet, 2 m up, level, lowland, basalt, 20 m from the shore.
+        assert!(share("sand beach", [298.0, 0.8, 2.0, 0.01, 0.1, 0.9, 20.0]) > 0.9);
+        assert!(share("forest", [298.0, 0.8, 40.0, 0.05, 0.1, 0.9, 500.0]) > 0.9);
+        assert!(share("wet sand", [298.0, 0.8, 0.2, 0.01, 0.1, 0.9, 5.0]) > 0.8);
+        assert!(share("basalt cliffs", [298.0, 0.8, 80.0, 0.6, 0.3, 0.9, 300.0]) > 0.7);
+        // A valley floor just above the sea but a kilometre inland is no
+        // beach.
+        assert!(share("sand beach", [298.0, 0.8, 2.0, 0.01, 0.1, 0.9, 1000.0]) < 0.05);
     }
 }

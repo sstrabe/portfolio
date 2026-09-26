@@ -349,9 +349,9 @@ fn surface_temperature(tp: TerrainParams, q: vec3<f32>, h: f32) -> f32 {
 
 // Biomes of living worlds (`terrain/biomes.rs`): where each is, as soft
 // windows on (temperature K, moisture, height m, steepness, ruggedness,
-// basalt), and what it's made of.
+// basalt, distance from the shore m), and what it's made of.
 struct Biome {
-    windows: array<vec4<f32>, 6>,  // lo, hi, soft, unused
+    windows: array<vec4<f32>, 7>,  // lo, hi, soft, unused
     albedo: Spectrum,
     ground: array<vec4<f32>, 2>,   // share of each ground material, by slot
     cover_weight: vec4<f32>,       // plant cover, precedence, unused, unused
@@ -373,8 +373,9 @@ fn biome_window(w: vec4<f32>, x: f32) -> f32 {
 }
 
 // `flat`: the cosine of the ground's slope (1 level).
-// `tile`: on terrain tiles, the boundaries' jitter and the boulder share.
-fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, baked: bool, flat: f32, tile: vec2<f32>) -> Material {
+// `tile`: on terrain tiles, the boundaries' jitter and the boulder share;
+// then the distance from the shore (m).
+fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, baked: bool, flat: f32, tile: vec3<f32>) -> Material {
     let jitter = tile.x;
     var mat: Material;
     mat.emission = spec(0.0);
@@ -409,14 +410,14 @@ fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, b
     // stays tidy, the plants' edge on the berm wanders a metre), a few %
     // in moisture.
     let h_m = h * 1000.0;
-    var v = array<f32, 6>(temp, moisture + 0.06 * jitter, h_m * (1.0 + 0.35 * jitter), 1.0 - flat, m.y, m.w);
+    var v = array<f32, 7>(temp, moisture + 0.06 * jitter, h_m * (1.0 + 0.35 * jitter), 1.0 - flat, m.y, m.w, tile.z * (1.0 + 0.3 * jitter));
     var total = 0.0;
     var albedo = spec(0.0);
     var ground = array<vec4<f32>, 2>(vec4<f32>(0.0), vec4<f32>(0.0));
     var cover = 0.0;
     for (var i = 0u; i < biomes.count.x; i++) {
         var w = biomes.b[i].cover_weight.y;
-        for (var k = 0u; k < 6u; k++) {
+        for (var k = 0u; k < 7u; k++) {
             w *= biome_window(biomes.b[i].windows[k], v[k]);
         }
         if (w <= 1e-6) {
@@ -533,7 +534,10 @@ fn planet_material(tp: TerrainParams, hit: SurfaceHit, baked: bool) -> Material 
     switch (tp.kind) {
         case KIND_OCEAN: {
             let flat = dot(hit.normal, normalize(hit.pos));
-            return material_ocean_world(tp, hit.body, hit.height, hit.terrain, baked, flat, vec2<f32>(hit.jitter, hit.boulder));
+            // How far from the shore, where the erosion's square knows (0
+            // elsewhere: beaches go by height alone).
+            let shore = max(region_shore(hit.body, tp.seed, tp.radius), 0.0);
+            return material_ocean_world(tp, hit.body, hit.height, hit.terrain, baked, flat, vec3<f32>(hit.jitter, hit.boulder, shore));
         }
         case KIND_DESERT: { return material_desert(hit.body, hit.terrain); }
         case KIND_ICE: { return material_ice(hit.terrain); }
