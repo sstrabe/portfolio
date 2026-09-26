@@ -203,6 +203,15 @@ fn tr_tile_surface(p: Planet, hp: ptr<function, SurfaceHit>, layer: u32, prim: u
     *hp = h;
 }
 
+// Anchored noise (−1 to 1) that breaks up the surf's foam, over metres
+// (0 off the tiles).
+fn terrain_surf_noise(h: SurfaceHit) -> f32 {
+    if (!h.tiled) {
+        return 0.0;
+    }
+    return 0.7 * anchored_noise(terrain_view.variation[2], h.local) + 0.5 * anchored_noise(terrain_view.variation[3], h.local);
+}
+
 // Where a material's texture is at place `st` of `tile` (face, level, x,
 // y): one repeat spans a tile of `repeat` level on the face grid, so the
 // coordinate is exact and continuous across tiles at any distance.

@@ -22,6 +22,10 @@ fn terrain_reflection(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLight, 
     return out;
 }
 
+fn terrain_surf_noise(h: SurfaceHit) -> f32 {
+    return 0.0;
+}
+
 fn terrain_micro(p: Planet, h: SurfaceHit, mat: Material) -> Micro {
     return Micro(1.0, h.normal, 1.0);
 }

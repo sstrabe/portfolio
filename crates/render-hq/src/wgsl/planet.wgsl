@@ -276,6 +276,46 @@ fn ocean_glint(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, wind: f32) -> f32 {
     return fresnel_water(dot(v, hv)) * d * g / (4.0 * nv);
 }
 
+// --- Surf ------------------------------------------------------------------
+
+// The waves' period (s) and the breakers' height (m) on beaches.
+const SURF_PERIOD: f32 = 9.0;
+const SURF_HEIGHT: f32 = 0.8;
+
+// White water over `depth_m` of sea at time `t` (s): inside the breaker
+// line (where the water is about as shallow as the waves are high) the
+// broken waves roll shoreward as bands of foam with patchy trails behind
+// them; `n` (−1 to 1) breaks them up. Depth stands in for the distance
+// offshore (beaches deepen steadily, see `terrain_coast`). 0–1.
+fn surf_foam(depth_m: f32, t: f32, n: f32) -> f32 {
+    let surf = smoothstep(1.7 * SURF_HEIGHT, 0.9 * SURF_HEIGHT, depth_m);
+    if (surf <= 0.0) {
+        return 0.0;
+    }
+    // Crests travel towards shallower water: a crest keeps depth/λ + t/T.
+    let s = fract(depth_m / 0.7 + t / SURF_PERIOD + 0.4 * n);
+    let front = smoothstep(0.0, 0.05, s) * exp(-3.5 * s);
+    let patches = saturate(0.55 + 0.6 * n);
+    return saturate(surf * front * (0.4 + 0.6 * patches) * 1.4);
+}
+
+// The swash on a beach `height_m` above the sea at time `t`: how much of
+// the point a film of water covers (it runs up fast and slides back
+// slowly, ~0.5 m up the height) and the foam at its leading edge.
+fn swash(height_m: f32, t: f32, n: f32) -> vec2<f32> {
+    let s = fract(t / SURF_PERIOD + 0.1 * n + 0.35);
+    // The run-up's reach (m above the sea) through the cycle.
+    let reach = 0.5 * select(1.0 - (s - 0.25) / 0.75, s / 0.25, s < 0.25) + 0.08 * n;
+    let film = smoothstep(reach + 0.03, reach - 0.03, height_m);
+    let edge = exp(-pow((height_m - reach) / 0.04, 2.0)) * select(0.35, 1.0, s < 0.25);
+    return vec2<f32>(film, saturate(edge * (0.5 + 0.5 * n + 0.3)));
+}
+
+// Foam: bright and matte, lit by the sun (`mu0` its cosine) and the sky.
+fn foam_radiance(e_sun: Spectrum, e_sky: Spectrum, mu0: f32) -> Spectrum {
+    return spec_scale(spec_add(spec_scale(e_sun, mu0), e_sky), 0.8 / PI);
+}
+
 // --- Solid worlds ----------------------------------------------------------
 
 struct Material {
@@ -580,7 +620,10 @@ fn planet_surface_radiance(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLi
         if (land.hit) {
             sky = spec_scale(land.L, fr);
         }
-        return spec_add(spec_add(below, glint), sky);
+        let sea = spec_add(spec_add(below, glint), sky);
+        // White water where the waves break over the shallows.
+        let foam = surf_foam(mat.depth_m, hq.view.z, terrain_surf_noise(h));
+        return spec_mix(sea, foam_radiance(e_sun, e_sky, mu0), foam);
     }
     // Centimetre detail of the scanned materials on terrain tiles.
     let micro = terrain_micro(p, h, mat);
@@ -591,7 +634,24 @@ fn planet_surface_radiance(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLi
     let nl = max(dot(n, sun.dir), 0.0) * smoothstep(-0.02, 0.02, dot(up, sun.dir));
     let direct = spec_scale(e_sun, f * nl);
     let ambient = spec_scale(e_sky, micro.ao / PI);
-    return spec_fma(spec_scale(mat.albedo, micro.albedo), spec_add(direct, ambient), mat.emission);
+    let ground = spec_fma(spec_scale(mat.albedo, micro.albedo), spec_add(direct, ambient), mat.emission);
+    // On sand the sea reaches: the swash's film of water running up and
+    // back, and a sheen where the sand stays wet.
+    let wet = mat.ground[GM_WET_SAND] + mat.ground[GM_SAND];
+    if (wet > 0.0 && h.height < 0.0008 && tp.liquid == FILL_WATER) {
+        let s = swash(h.height * 1000.0, hq.view.z, terrain_surf_noise(h));
+        let fr = fresnel_water(max(dot(up, view), 0.0));
+        let mu0 = max(dot(up, sun.dir), 0.0);
+        // A film: the sky mirrored and the sun's glint on it, the sand
+        // seen through (darkened, as wet sand is).
+        let film = spec_add(spec_add(spec_scale(e_sky, fr / PI), spec_scale(e_sun, ocean_glint(up, view, sun.dir, 1.0))), spec_scale(ground, 0.7 * (1.0 - fr)));
+        // Wet sand shines a little between the swashes.
+        let sheen = spec_add(ground, spec_scale(e_sky, 0.35 * fr / PI));
+        var out = spec_mix(ground, sheen, smoothstep(0.0008, 0.0002, h.height) * wet);
+        out = spec_mix(out, film, s.x * wet);
+        return spec_mix(out, foam_radiance(e_sun, e_sky, mu0), s.y * wet);
+    }
+    return ground;
 }
 
 // --- Rings --------------------------------------------------------------------
