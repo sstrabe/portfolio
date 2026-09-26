@@ -443,12 +443,22 @@ fn tn_hotspots(tp: TerrainParams, q: vec3<f32>) -> vec3<f32> {
             // and wearing down.
             let amp = max(10.0 * exp(-age / 9.0) - 0.35 * age, 0.0);
             var shield = amp * exp(-pow(rho, 1.4));
-            // Radial valleys cut into the older, rain-washed flanks.
+            // Radial valleys cut into the older, rain-washed flanks: wide
+            // and deep mid-flank, heading in amphitheatres below the
+            // summit and opening to the sea, with knife-edge ridges
+            // between them and tributaries on the lower flanks. (Whole
+            // numbers of valleys, so the pattern closes round the island.)
             if (age > 1.0) {
                 let bearing = atan2(across_rift, along_rift);
-                let n_valleys = 14.0 + 6.0 * rk.y;
-                let v = pow(0.5 + 0.5 * cos(n_valleys * bearing + 3.0 * tn_noise(q * tp.radius / 8.0, tp.seed + k)), 6.0);
-                shield *= 1.0 - min(0.08 * age, 0.5) * v * smoothstep(0.15, 0.6, rho) * smoothstep(1.8, 0.8, rho);
+                let n_valleys = floor(12.0 + 8.0 * rk.y);
+                let wander = 2.5 * tn_noise(q * tp.radius / 9.0, tp.seed + k) + 0.8 * tn_noise(q * tp.radius / 3.0, tp.seed + k + 17u);
+                // 0 on a valley's floor, 1 on the ridge between two.
+                let main = abs(sin(0.5 * (n_valleys * bearing + wander)));
+                let tribs = abs(sin(0.5 * ((2.0 * n_valleys + 1.0) * bearing + 1.7 * wander + 1.3)));
+                let flank = smoothstep(0.12, 0.45, rho) * smoothstep(1.9, 0.9, rho);
+                let lower = smoothstep(0.45, 0.9, rho) * smoothstep(1.8, 1.1, rho);
+                let carve = pow(1.0 - main, 1.4) + 0.45 * lower * pow(1.0 - tribs, 2.0);
+                shield *= 1.0 - min(0.1 * age, 0.6) * flank * min(carve, 1.0);
             }
             // A caldera on the young summits.
             shield -= 0.15 * amp * exp(-pow(rho / 0.08, 2.0)) * step(age, 2.0);

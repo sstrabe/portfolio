@@ -386,7 +386,7 @@ fn on_ground(world: &mut World, g: GroundStart, gpu: &Gpu) -> Result<String, Str
     };
     let what = match g.site {
         Site::Coast => format!("{what}, 30 m from the shore, facing the sea"),
-        Site::Island => format!("{what} on a young volcanic island, 30 m from the shore, facing the sea"),
+        Site::Island => format!("{what} on a volcanic island, 30 m from the shore, facing the sea"),
         _ => what,
     };
     Ok(format!(
@@ -470,10 +470,10 @@ fn find_island(world: &World, sys: &planets::System, i: usize, probe: &Probe, gp
         .collect::<Vec<_>>();
     let samples = probe.sample(&gpu.device, &gpu.queue, planet, &tropics, 5.0);
     // Prefer the trade-wind belt (like Hawaii at ~20°): the equator's
-    // convergence zone is the cloudiest, rainiest place on a world. The
-    // tallest island there that the sea surrounds (at least 5 of 8 points
-    // on a 120 km ring are sea): young shields merge along their chains, and
-    // some sit on continents.
+    // convergence zone is the cloudiest, rainiest place on a world. A
+    // middle-aged island there (else the tallest) that the sea surrounds
+    // (at least 5 of 8 points on a 120 km ring are sea): young shields
+    // merge along their chains, and some sit on continents.
     let island = |band: &dyn Fn(f64) -> bool| -> Option<V3> {
         let mut cands: Vec<(V3, f32)> = tropics
             .iter()
@@ -482,6 +482,44 @@ fn find_island(world: &World, sys: &planets::System, i: usize, probe: &Probe, gp
             .map(|(q, s)| (*q, s.hotspot[0]))
             .collect();
         cands.sort_by(|a, b| b.1.total_cmp(&a.1));
+        // One per island (its highest point sampled), and middle-aged ones
+        // first: worn into ridges and valleys like Kauai or Oahu, their
+        // shields 3.5-7 km above the floor (young ones stand taller and
+        // smoother).
+        let mut summits: Vec<(V3, f32)> = Vec::new();
+        for c in &cands {
+            if summits.iter().all(|s| vec3::dot(s.0, c.0).clamp(-1.0, 1.0).acos() * planet.radius_km > 80.0) {
+                summits.push(*c);
+            }
+        }
+        // The samples are ~26 km apart and miss most summits: find each
+        // island's highest point on a 7×7 grid 5 km apart around its best.
+        summits.truncate(40);
+        let step = 5.0 / planet.radius_km;
+        let grid: Vec<V3> = summits
+            .iter()
+            .flat_map(|s| {
+                let e1 = vec3::any_orthogonal(s.0);
+                let e2 = vec3::cross(s.0, e1);
+                (0..49).map(move |k| {
+                    let (i, j) = ((k % 7) as f64 - 3.0, (k / 7) as f64 - 3.0);
+                    vec3::normalize(vec3::add(s.0, vec3::add(vec3::scale(e1, i * step), vec3::scale(e2, j * step))))
+                })
+            })
+            .collect();
+        let fine = probe.sample(&gpu.device, &gpu.queue, planet, &grid, 5.0);
+        for (k, s) in summits.iter_mut().enumerate() {
+            if let Some((q, f)) = grid[49 * k..49 * k + 49]
+                .iter()
+                .zip(&fine[49 * k..49 * k + 49])
+                .max_by(|a, b| a.1.hotspot[0].total_cmp(&b.1.hotspot[0]))
+            {
+                *s = (*q, s.1.max(f.hotspot[0]));
+            }
+        }
+        let aged = |a: f32| (3.5..7.0).contains(&a);
+        summits.sort_by(|a, b| aged(b.1).cmp(&aged(a.1)).then(b.1.total_cmp(&a.1)));
+        let mut cands = summits;
         cands.truncate(300);
         let ring = |q: V3| -> Vec<V3> {
             let (e1, a) = (vec3::any_orthogonal(q), 120.0 / planet.radius_km);
