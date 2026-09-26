@@ -13,6 +13,7 @@ pub mod field;
 pub mod ground;
 pub mod maps;
 pub mod materials;
+pub mod plants;
 pub mod probe;
 pub mod rocks;
 pub mod rt;
