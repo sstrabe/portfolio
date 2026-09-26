@@ -9,9 +9,9 @@
 // a tile is a cell index and a fraction in it, exact from the tile's index
 // and its place in it, and the same for a point on the ground and on top
 // of a boulder (no height involved). A cell may hold one boulder (the
-// share `density` of them do), jittered, under half a cell in radius, so
-// the four cells nearest a point hold every boulder that reaches it and
-// the field is continuous.
+// share `density` of them do): faceted, jittered, reaching under half a
+// cell from its centre, so the four cells nearest a point hold every
+// boulder that reaches it and the field is continuous.
 // ---------------------------------------------------------------------------
 
 // How many cells hold a boulder, from a tile's material channels
@@ -61,24 +61,29 @@ fn boulders_at(tile: vec4<u32>, st: vec2<f32>, cell_level: u32, cell_km: f32, de
         }
         let hs2 = anc_pcg3d(hs ^ vec3<u32>(0x68bc21ebu));
         let r2 = vec3<f32>(hs2 >> vec3<u32>(8u)) / 16777216.0;
-        let radius = 0.1 + 0.36 * r.y * r.y;
-        // Jittered so the boulder stays inside its cell's reach.
-        let centre = vec2<f32>(c) + 0.5 + (r2.xy - 0.5) * (0.98 - 2.0 * radius);
-        var off = f - centre;
-        // Elongated along a random direction, with a lumpy outline.
-        let a = 6.2831853 * r2.z;
-        let dir = vec2<f32>(cos(a), sin(a));
-        let e = 0.6 + 0.4 * fract(r.z * 7.31);
-        off = vec2<f32>(dot(off, dir), dot(off, vec2<f32>(-dir.y, dir.x)) / e);
-        let ang = atan2(off.y, off.x);
-        let lump = 1.0 + 0.18 * sin(3.0 * ang + 6.2831853 * r.z) + 0.1 * sin(5.0 * ang + 6.2831853 * r2.x);
-        let q = length(off) / (radius * lump);
-        if (q < 1.0) {
-            // A blocky dome, tilted.
-            let tilt = 1.0 + 0.35 * dot(off / radius, vec2<f32>(r2.y - 0.5, r2.x - 0.5));
-            let dome = pow(1.0 - q * q, 0.4) * radius * (0.35 + 0.35 * r.z) * tilt;
-            top = max(top, dome * cell_km);
-            mask = max(mask, 1.0 - smoothstep(0.9, 1.0, q));
+        let radius = 0.1 + 0.3 * r.y * r.y;
+        // Jittered so the boulder stays inside its cell's reach (its
+        // corners reach 1.3 radii out).
+        let centre = vec2<f32>(c) + 0.5 + (r2.xy - 0.5) * (0.98 - 2.6 * radius);
+        let off = f - centre;
+        // Faceted: under a flat, tilted top, six sides sloping down, each
+        // meeting the ground 0.85–1.1 radii out along its direction, so the
+        // outline is an irregular polygon.
+        let a0 = 6.2831853 * r.z;
+        let cap = radius * (0.3 + 0.35 * r2.z) * (1.0 + 0.3 * dot(off / radius, vec2<f32>(r2.y - 0.5, r2.x - 0.5)));
+        var h = cap;
+        var hj = hs2;
+        for (var j = 0u; j < 6u; j++) {
+            hj = anc_pcg3d(hj);
+            let rj = vec3<f32>(hj >> vec3<u32>(8u)) / 16777216.0;
+            let ang = a0 + 6.2831853 * (f32(j) + 0.35 * (rj.x - 0.5)) / 6.0;
+            let steep = 1.3 + 1.6 * rj.y;
+            let reach = radius * (0.85 + 0.25 * rj.z);
+            h = min(h, steep * (reach - dot(off, vec2<f32>(cos(ang), sin(ang)))));
+        }
+        if (h > 0.0) {
+            top = max(top, h * cell_km);
+            mask = max(mask, smoothstep(0.0, 0.03 * radius, h));
         }
     }
     return vec2<f32>(top, mask);
