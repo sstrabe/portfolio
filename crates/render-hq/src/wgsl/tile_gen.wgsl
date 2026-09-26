@@ -119,6 +119,30 @@ fn parent_height(layer: u32, p: vec2<f32>) -> f32 {
     return h;
 }
 
+// Gullies: channels running down the slope. Each lattice cell near the
+// point (the 2×2×2 nearest, anchored) has a jittered centre that lays a
+// stripe pattern across the downhill direction, faded with distance, so
+// every level carves rills into its parent's slopes (and, as the parent's
+// slopes hold the coarser gullies, they branch along them). `across` is a
+// unit vector along the ground, square to the slope. Roughly −1 to 1.
+fn tile_gullies(o: AnchorOctave, d: vec3<f32>, across: vec3<f32>) -> f32 {
+    let l = anc_lattice(o, d);
+    let seed = bitcast<u32>(o.cell.w) ^ 0x9e3779b9u;
+    let base = vec3<i32>(floor(l.frac - 0.5));
+    var sum = 0.0;
+    var wsum = 0.0;
+    for (var k = 0; k < 8; k++) {
+        let c = base + vec3<i32>(k & 1, (k >> 1) & 1, (k >> 2) & 1);
+        let hsh = anc_pcg3d(bitcast<vec3<u32>>(l.cell + c) ^ vec3<u32>(seed, seed * 3u, seed * 7u));
+        let jitter = vec3<f32>(hsh >> vec3<u32>(8u)) / 16777216.0;
+        let off = l.frac - (vec3<f32>(c) + jitter);
+        let w = max(1.0 - dot(off, off) / 2.25, 0.0);
+        sum += w * w * cos(6.2831853 * dot(off, across));
+        wsum += w * w;
+    }
+    return sum / max(wsum, 1e-4);
+}
+
 // The parent's material channels at texel coordinates `p` (bilinear).
 fn parent_material(layer: u32, p: vec2<f32>) -> vec4<f32> {
     let base = floor(p);
@@ -162,6 +186,17 @@ fn cs_tile_gen(@builtin(global_invocation_id) gid: vec3<u32>) {
         m = parent_material(job.slots.y, p);
         let d = tile_offset(job.frame, st.x - 0.5, st.y - 0.5);
         let o = tg.octaves[min(level - TILE_REFINE_FROM, 15u)];
+        // The parent's slope here (km per km) along the ground, from its
+        // heights a sample either side (the same texels a neighbouring
+        // tile reads, so shared edges still agree).
+        let f = job.frame;
+        let dh = vec2<f32>(
+            parent_height(job.slots.y, p + vec2<f32>(0.5, 0.0)) - parent_height(job.slots.y, p - vec2<f32>(0.5, 0.0)),
+            parent_height(job.slots.y, p + vec2<f32>(0.0, 0.5)) - parent_height(job.slots.y, p - vec2<f32>(0.0, 0.5)),
+        ) / (2.0 * spacing);
+        let up = normalize(job.centre.xyz * job.centre.w + (d - f.origin.xyz));
+        let slope_dir = dh.x * normalize(f.a_s.xyz) + dh.y * normalize(f.a_t.xyz);
+        let slope = length(slope_dir);
         // Slopes stay roughly constant from octave to octave (as in
         // `terrain_detail`): ridged ranges rough, lowlands gentle.
         let k = tp.relief / 16.0;
@@ -171,7 +206,15 @@ fn cs_tile_gen(@builtin(global_invocation_id) gid: vec3<u32>) {
             // the sand's own texture gives the centimetres).
             rough *= mix(0.1, 1.0, smoothstep(0.004, 0.015, abs(h - 0.0015)));
         }
-        h += rough * anchored_noise(o, d);
+        // On slopes the detail runs in gullies down them; on the level it
+        // stays plain noise.
+        var detail = anchored_noise(o, d);
+        let erode = smoothstep(0.04, 0.3, slope) * smoothstep(0.0, 0.02, h);
+        if (erode > 0.0) {
+            let across = normalize(cross(up, slope_dir));
+            detail = mix(detail, 1.4 * tile_gullies(o, d, across), erode);
+        }
+        h += rough * detail;
     }
     h = clamp(h, tp.lo, tp.hi);
     textureStore(tile_height, gid.xy, layer, vec4<f32>(h));
