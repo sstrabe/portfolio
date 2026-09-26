@@ -18,8 +18,25 @@ use wgpu::util::DeviceExt;
 /// Cells a side, and their size (m).
 pub const REGION_N: u32 = 1024;
 pub const CELL_M: f64 = 125.0;
-/// Baked again when the eye is this far (km) from the square's centre.
+/// Baked again when the eye is this far (km, along the ground) from the
+/// square's centre, and only while it's this low (km): from higher the
+/// tiles are too coarse to use it, and in orbit the eye is always far.
 pub const REBAKE_KM: f64 = 40.0;
+pub const BAKE_BELOW_KM: f64 = 30.0;
+
+/// Whether to bake for an eye at body-fixed `eye_km` over a planet of
+/// `radius_km` (key `key`), given what was baked last.
+pub fn bake_wanted(baked: Option<(MapKey, V3)>, key: MapKey, radius_km: f64, eye_km: V3) -> bool {
+    if vec3::norm(eye_km) - radius_km > BAKE_BELOW_KM {
+        return false;
+    }
+    match baked {
+        Some((k, c)) => {
+            k != key || vec3::dot(c, vec3::normalize(eye_km)).clamp(-1.0, 1.0).acos() * radius_km > REBAKE_KM
+        }
+        None => true,
+    }
+}
 /// The run: steps of `DT_YEARS` (4 Myr in all), stream-power erodibility
 /// and area exponent, hillslope diffusivity (m²/yr).
 const STEPS: u32 = 400;
@@ -173,15 +190,11 @@ impl RegionErosion {
     }
 
     /// Whether the square should be baked (again) for an eye at body-fixed
-    /// `eye_km` on `planet` (only worlds with seas are eroded so far).
+    /// `eye_km` on `planet` (only worlds with seas are eroded so far; see
+    /// [`bake_wanted`]).
     pub fn wanted(&self, key: MapKey, planet: &Planet, eye_km: V3) -> bool {
-        if planet.kind != kerr::planets::PlanetKind::Ocean {
-            return false;
-        }
-        match self.baked {
-            Some((k, c)) => k != key || vec3::norm(vec3::sub(vec3::scale(c, planet.radius_km), eye_km)) > REBAKE_KM,
-            None => true,
-        }
+        let wet = planet.kind == kerr::planets::PlanetKind::Ocean;
+        wet && bake_wanted(self.baked, key, planet.radius_km, eye_km)
     }
 
     /// Bake the square centred under body-fixed `eye_km` (submitted now;
@@ -238,6 +251,21 @@ impl RegionErosion {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Baked once near the ground, again only after travelling along it,
+    /// never from orbit (where the eye is always far from the ground).
+    #[test]
+    fn when_to_bake() {
+        let (key, r) = ((1, 0, 2), 6371.0);
+        let q = vec3::normalize([0.3, 0.4, 0.5]);
+        assert!(bake_wanted(None, key, r, vec3::scale(q, r + 0.5)));
+        assert!(!bake_wanted(None, key, r, vec3::scale(q, r + 420.0)));
+        let baked = Some((key, q));
+        assert!(!bake_wanted(baked, key, r, vec3::scale(q, r + 20.0)));
+        assert!(bake_wanted(baked, (1, 0, 3), r, vec3::scale(q, r + 0.5)));
+        let moved = vec3::normalize(vec3::add(q, [0.01, 0.0, 0.0]));
+        assert!(bake_wanted(baked, key, r, vec3::scale(moved, r + 0.2)));
+    }
 
     /// The square's axes are orthonormal and along the ground, and the
     /// parameters mirror the shader's struct.
