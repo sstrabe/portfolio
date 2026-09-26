@@ -3,7 +3,7 @@
 //! (stream-power incision along the drainage and hillslope diffusion), so
 //! old land has dendritic valleys and sharp ridges. A planet-wide map
 //! would be far too coarse for an island (~20 km cells); this one is
-//! 250 m. It's baked on the GPU in one go when a world comes up or the
+//! 125 m. It's baked on the GPU in one go when a world comes up or the
 //! eye has travelled [`REBAKE_KM`], and the tile generator adds its height
 //! change inland (nothing below 15 m, so coastlines and beaches stay where
 //! the relief puts them, and never cutting land below 40% of its height).
@@ -16,14 +16,14 @@ use kerr::vec3::{self, V3};
 use wgpu::util::DeviceExt;
 
 /// Cells a side, and their size (m).
-pub const REGION_N: u32 = 512;
-pub const CELL_M: f64 = 250.0;
+pub const REGION_N: u32 = 1024;
+pub const CELL_M: f64 = 125.0;
 /// Baked again when the eye is this far (km) from the square's centre.
 pub const REBAKE_KM: f64 = 40.0;
 /// The run: steps of `DT_YEARS` (4 Myr in all), stream-power erodibility
 /// and area exponent, hillslope diffusivity (m²/yr).
-const STEPS: u32 = 200;
-const DT_YEARS: f32 = 2.0e4;
+const STEPS: u32 = 400;
+const DT_YEARS: f32 = 1.0e4;
 const ERODIBILITY: f32 = 1.0e-6;
 const AREA_EXPONENT: f32 = 0.5;
 const DIFFUSIVITY: f32 = 0.3;
