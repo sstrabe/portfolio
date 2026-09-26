@@ -169,7 +169,7 @@ fn frond(m: &mut PlantMesh, base: V3, dir_h: V3, rise: f64, len: f64, droop: f64
 /// most one a cell.
 pub const PALM_CELL_M: f64 = 9.0;
 /// Out to this far from the eye (km).
-pub const PALM_RANGE_KM: f64 = 0.16;
+pub const PALM_RANGE_KM: f64 = 0.4;
 
 /// A place a palm might stand: body-fixed unit direction, variant, and its
 /// lean (rad about up) and the cell's two random numbers for thinning.
