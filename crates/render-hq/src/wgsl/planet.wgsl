@@ -59,6 +59,17 @@ struct Micro {
     albedo: f32,
     normal: vec3<f32>,
     ao: f32,
+    // The scans' colour relative to their own average (r, g, b; 1 plain).
+    tint: vec3<f32>,
+}
+
+// A reflectance's tint by an rgb ratio: smooth blue, green and red bands
+// that sum to one, each scaled by its channel.
+fn spec_tint(t: vec3<f32>) -> Spectrum {
+    let blue = spec_sub(spec(1.0), spec_ramp(450.0, 530.0));
+    let red = spec_ramp(560.0, 630.0);
+    let green = spec_sub(spec_sub(spec(1.0), blue), red);
+    return spec_add(spec_add(spec_scale(blue, t.z), spec_scale(green, t.y)), spec_scale(red, t.x));
 }
 
 // Terrain mirrored by the sea (`terrain_reflection` in `terrain_rq.wgsl`).
@@ -438,9 +449,10 @@ fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, b
     mat.cover = cover / total;
     // Plants hide most of the ground beneath (until they're drawn
     // themselves, the biome's colour stands in for them).
+    // (Plant-cover materials, grass, are what the plants are: not hidden.)
     let seen = (1.0 - 0.85 * mat.cover) / total;
     for (var i = 0u; i < GM_COUNT; i++) {
-        mat.ground[i] = ground[i / 4u][i % 4u] * seen;
+        mat.ground[i] = ground[i / 4u][i % 4u] * mix(seen, 1.0 / total, GM_IS_COVER[i]);
     }
     // Boulders: bare rock of the land's kind, nothing growing on them.
     let b = tile.y;
@@ -513,15 +525,15 @@ fn material_rocky(tp: TerrainParams, h: f32, m: vec4<f32>) -> Material {
     return mat;
 }
 
-// Plants' parts: bark (grey-brown), live and dead leaves, grass (olive,
-// drying at the tips).
+// Plants' parts: bark (grey-brown), live and dead leaves, grass (fresh,
+// a little dry).
 fn plant_material(plant: u32) -> Material {
     var mat: Material;
     mat.emission = spec(0.0);
     switch (plant) {
         case 1u: { mat.albedo = spec_axpy(spec_ramp(420.0, 700.0), 0.1, spec(0.14)); }
         case 2u: { mat.albedo = spec_scale(refl_vegetation(0.15), 1.15); }
-        case 4u: { mat.albedo = refl_vegetation(0.45); }
+        case 4u: { mat.albedo = spec_scale(refl_vegetation(0.3), 1.2); }
         default: { mat.albedo = refl_vegetation(1.0); }
     }
     return mat;
@@ -675,7 +687,7 @@ fn planet_surface_radiance(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLi
         direct = spec_add(direct, spec_scale(e_sun, 0.8 * max(-dot(n, sun.dir), 0.0) / PI));
     }
     let ambient = spec_scale(e_sky, micro.ao / PI);
-    let ground = spec_fma(spec_scale(mat.albedo, micro.albedo), spec_add(direct, ambient), mat.emission);
+    let ground = spec_fma(spec_mul(spec_scale(mat.albedo, micro.albedo), spec_tint(micro.tint)), spec_add(direct, ambient), mat.emission);
     // On sand the sea reaches: the swash's film of water running up and
     // back, and a sheen where the sand stays wet.
     let wet = mat.ground[GM_WET_SAND] + mat.ground[GM_SAND];

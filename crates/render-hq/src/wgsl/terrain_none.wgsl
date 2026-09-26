@@ -31,7 +31,7 @@ fn terrain_surf_noise(h: SurfaceHit) -> f32 {
 }
 
 fn terrain_micro(p: Planet, h: SurfaceHit, mat: Material) -> Micro {
-    return Micro(1.0, h.normal, 1.0);
+    return Micro(1.0, h.normal, 1.0, vec3<f32>(1.0));
 }
 
 fn terrain_surface_hit(p: Planet, o: vec3<f32>, dir: vec3<f32>, u_max: f32, fp: f32, scale: f32) -> SurfaceHit {

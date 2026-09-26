@@ -12,6 +12,7 @@ displacement (`disp`) and AO/roughness/metalness (`arm`).
 | `damp_beach_sand_02` | [Damp Beach Sand 02](https://polyhaven.com/a/damp_beach_sand_02) | wet sand |
 | `dark_rock` | [Dark Rock](https://polyhaven.com/a/dark_rock) | basalt |
 | `forest_ground_04` | [Forest Ground 04](https://polyhaven.com/a/forest_ground_04) | soil under vegetation |
+| `leafy_grass` | [Leafy Grass](https://polyhaven.com/a/leafy_grass) | grass and leaf litter (plant cover) |
 
 To add a set: put its four maps (1024², the same file names) in a directory
 here and add a line to `MATERIALS` in `src/terrain/materials.rs`.

@@ -34,10 +34,16 @@ pub struct GroundMaterial {
     pub repeat_level: u32,
     /// Height between the displacement map's black and white, m.
     pub relief_m: f32,
+    /// Whether it's plant cover itself (grass): the biomes' plants don't
+    /// hide it as they hide soil.
+    pub cover: bool,
 }
 
 macro_rules! scanned {
     ($slot:literal, $name:literal, $level:expr, $relief:expr) => {
+        scanned!($slot, $name, $level, $relief, false)
+    };
+    ($slot:literal, $name:literal, $level:expr, $relief:expr, $cover:expr) => {
         GroundMaterial {
             slot: $slot,
             name: $name,
@@ -77,6 +83,7 @@ macro_rules! scanned {
             ],
             repeat_level: $level,
             relief_m: $relief,
+            cover: $cover,
         }
     };
 }
@@ -91,6 +98,8 @@ pub static MATERIALS: &[GroundMaterial] = &[
     scanned!("ROCK", "dark_rock", 22, 0.12),
     // Soil with stones and gravel, under vegetation (3.2 m).
     scanned!("SOIL", "forest_ground_04", 21, 0.06),
+    // Short grass with leaf litter: ground cover (2 m).
+    scanned!("GRASS", "leafy_grass", 22, 0.03, true),
 ];
 
 /// Wavelengths (m) of the anchored noise that varies the ground's
@@ -120,6 +129,8 @@ pub fn wgsl_constants() -> String {
         s.push_str(&format!("const GM_{}: u32 = {i}u;\n", m.slot));
     }
     s.push_str(&format!("const GM_COUNT: u32 = {}u;\n", MATERIALS.len()));
+    let cover: Vec<&str> = MATERIALS.iter().map(|m| if m.cover { "1.0" } else { "0.0" }).collect();
+    s.push_str(&format!("const GM_IS_COVER = array<f32, {}>({});\n", MATERIALS.len(), cover.join(", ")));
     s
 }
 
@@ -322,7 +333,11 @@ mod tests {
             assert!((mean(0) - 0.5).abs() < 0.05 && (mean(1) - 0.5).abs() < 0.05, "{}", m.name);
         }
         let s = wgsl_constants();
-        assert!(s.contains("const GM_SAND: u32 = 0u;") && s.contains("const GM_COUNT: u32 = 4u;"));
+        assert!(
+            s.contains("const GM_SAND: u32 = 0u;")
+                && s.contains(&format!("const GM_COUNT: u32 = {}u;", MATERIALS.len()))
+        );
+        assert!(s.contains("const GM_IS_COVER"));
     }
 
     /// Mips halve down to one texel and keep the mean (in linear light for

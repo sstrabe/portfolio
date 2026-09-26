@@ -295,7 +295,7 @@ fn tr_ground_uv(tile: vec4<u32>, st: vec2<f32>, repeat: u32) -> vec2<f32> {
 // of two materials shows, as rock stands out of sand): brightness, normal
 // and occlusion.
 fn terrain_micro(p: Planet, h: SurfaceHit, mat: Material) -> Micro {
-    var out = Micro(1.0, h.normal, 1.0);
+    var out = Micro(1.0, h.normal, 1.0, vec3<f32>(1.0));
     if (!h.tiled || h.height < 0.0 || h.plant != 0u) {
         return out;
     }
@@ -318,6 +318,7 @@ fn terrain_micro(p: Planet, h: SurfaceHit, mat: Material) -> Micro {
     var bright = 0.0;
     var nts = vec2<f32>(0.0);
     var ao = 0.0;
+    var tint = vec3<f32>(0.0);
     for (var i = 0u; i < GM_COUNT; i++) {
         let w = mat.ground[i];
         if (w < 0.02) {
@@ -347,7 +348,11 @@ fn terrain_micro(p: Planet, h: SurfaceHit, mat: Material) -> Micro {
         let wh = w * exp(4.0 * (a.a - a_low.a));
         let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
         weight_sum += wh;
-        bright += wh * dot(a.rgb, luma) / max(dot(a_low.rgb, luma), 1e-3);
+        let y = max(dot(a.rgb, luma), 1e-3);
+        let y_low = max(dot(a_low.rgb, luma), 1e-3);
+        bright += wh * y / y_low;
+        // Its colour relative to its own average there (chroma only).
+        tint += wh * (a.rgb / y) / max(a_low.rgb / y_low, vec3<f32>(1e-3));
         nts += wh * 2.0 * (d.xy - d_low.xy);
         ao += wh * d.z / max(d_low.z, 0.2);
     }
@@ -360,6 +365,8 @@ fn terrain_micro(p: Planet, h: SurfaceHit, mat: Material) -> Micro {
     let share = saturate(weight_sum / (weight_sum + max(1.0 - weight_sum, 0.0)));
     out.albedo *= mix(1.0, clamp(bright / total, 0.0, 2.5), share);
     out.ao = mix(1.0, ao / total, share);
+    // Scans carry their colour variation too, at 60% strength.
+    out.tint = mix(vec3<f32>(1.0), clamp(tint / total, vec3<f32>(0.3), vec3<f32>(2.5)), 0.6 * share);
     let t = nts / total * share;
     // Tangent frame: the texture's x along +s, its y (up the image) along
     // −t, both on the tile's shading normal.
