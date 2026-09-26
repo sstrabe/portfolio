@@ -926,7 +926,7 @@ mod tests {
         let eye = vec3::scale(site, planet.radius_km + ground + 0.0017);
         let mut field = TerrainField::new(&gpu.device, true);
         for _ in 0..120 {
-            field.update(&gpu.device, &gpu.queue, ((0, 0, i), planet), eye, 1e-3, None);
+            field.update(&gpu.device, &gpu.queue, ((0, 0, i), planet), (eye, eye), 1e-3, None);
         }
         let s = field.stats;
         println!("{} tiles drawn, finest level {}, {} standing in", field.drawn.len(), s.finest, s.standing_in);
@@ -960,7 +960,7 @@ mod tests {
         // The CPU's ground (read back, on the traced triangles) agrees with
         // rays cast straight down on the GPU, around the eye.
         for _ in 0..10 {
-            field.update(&gpu.device, &gpu.queue, ((0, 0, i), planet), eye, 1e-3, None);
+            field.update(&gpu.device, &gpu.queue, ((0, 0, i), planet), (eye, eye), 1e-3, None);
         }
         let anchor = field.anchor_km().unwrap();
         let accel = field.tile_gen.accel.as_ref().unwrap();

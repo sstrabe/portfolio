@@ -316,6 +316,10 @@ pub struct Vertical {
     pub axes: [V3; 3],
     /// Up, away from the planet's centre, in the planet frame.
     pub up: V3,
+    /// The pilot's position from the centre in the planet frame (units of
+    /// M) and the planet's rotation angle then (rad).
+    pub pos: V3,
+    pub angle: f64,
 }
 
 /// A body for the orbit autopilot, now.
@@ -1202,7 +1206,28 @@ impl World {
         let x = vec3::normalize(ship(rel.frame.e[1]));
         let y = vec3::normalize(vec3::axpy(ship(rel.frame.e[2]), -vec3::dot(ship(rel.frame.e[2]), x), x));
         let axes = [x, y, vec3::cross(x, y)];
-        (vec3::norm(rel.pos) > 0.0).then(|| Vertical { planet: l.planet_ref(i), axes, up: vec3::normalize(rel.pos) })
+        let angle = l.planet(i)?.rotation(rel.centre[0] * SECONDS_PER_M);
+        (vec3::norm(rel.pos) > 0.0).then(|| Vertical {
+            planet: l.planet_ref(i),
+            axes,
+            up: vec3::normalize(rel.pos),
+            pos: rel.pos,
+            angle,
+        })
+    }
+
+    /// Height (m) of the point `offset_m` metres from the pilot along the
+    /// ship's axes above what's under it near the planet `v` is for: the
+    /// ground where it's known (the sea's surface on ocean worlds), else
+    /// the datum. For keeping a camera out of the ground.
+    pub fn height_above_ground_m(&self, v: &Vertical, offset_m: V3) -> Option<f64> {
+        let l = self.system_of(v.planet)?;
+        let planet = l.planet(v.planet.planet)?;
+        let (_, radius) = l.planet_mass(v.planet.planet);
+        let p = vec3::add(v.pos, v.axes.map(|a| vec3::dot(a, offset_m) / units::METRES_PER_M));
+        let q = vec3::rotate(vec3::normalize(p), planet.spin_axis, -v.angle);
+        let ground_km = self.surface_height_km(v.planet, q).unwrap_or(0.0);
+        Some(((vec3::norm(p) - radius) * KM_PER_M - ground_km) * 1e3)
     }
 
     /// Engage the orbit autopilot on the target (else the nearest planet,
@@ -2109,6 +2134,14 @@ mod tests {
         }
         let up: V3 = std::array::from_fn(|m| (0..3).map(|j| v.up[j] * v.axes[j][m]).sum());
         assert!(vec3::dot(up, [-1.0, 0.0, 0.0]) > 0.9999, "{up:?}");
+        // Heights above the ground of points about the ship: 1 km behind
+        // it is 1 km higher.
+        w.set_ground(Some(Box::new(FlatGround { planet: p, height_km: 2.0 })));
+        let h = w.height_above_ground_m(&v, [0.0; 3]).unwrap();
+        let alt = w.telemetry().planet.unwrap().altitude_km;
+        assert!((h - (alt - 2.0) * 1e3).abs() < 0.1, "{h} {alt}");
+        let behind = w.height_above_ground_m(&v, [-1000.0, 0.0, 0.0]).unwrap();
+        assert!((behind - h - 1000.0).abs() < 0.1, "{behind} {h}");
     }
 
     /// A landed ship settles onto ground that becomes known, at its

@@ -71,13 +71,14 @@ impl TerrainField {
 
     /// Update for an eye at `eye_km` (body-fixed, from the centre of the
     /// planet, which `key` identifies) and a view of `pixel_angle` rad per
-    /// pixel.
+    /// pixel; the ground is read back around the eye and the pilot at
+    /// `pilot_km` (they differ by the chase camera's offset).
     pub fn update(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         (key, planet): (MapKey, &Planet),
-        eye_km: V3,
+        (eye_km, pilot_km): (V3, V3),
         pixel_angle: f64,
         profiler: Option<&mut crate::profile::Profiler>,
     ) {
@@ -129,7 +130,7 @@ impl TerrainField {
             (key, planet.spin_axis),
             &self.tile_gen,
             &self.drawn,
-            vec3::normalize(eye_km),
+            &[vec3::normalize(pilot_km), vec3::normalize(eye_km)],
         );
         if let Some(accel) = &mut self.tile_gen.accel {
             let mut enc =

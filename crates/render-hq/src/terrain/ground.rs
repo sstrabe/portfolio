@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Tiles kept on the CPU at most.
 const MAX_CACHED: usize = 64;
 /// Read-backs in flight at most.
-const MAX_PENDING: usize = 9;
+const MAX_PENDING: usize = 18;
 
 /// A tile's mesh-vertex heights (km), `(MESH_N + 1)²`, row by row.
 type MeshHeights = Arc<Vec<f32>>;
@@ -39,9 +39,10 @@ pub struct GroundCache {
 }
 
 impl GroundCache {
-    /// Collect finished read-backs and ask for the tiles around `eye_dir`
-    /// (body-fixed unit vector): the finest drawn tile under it and its
-    /// neighbours at that level where they are drawn too.
+    /// Collect finished read-backs and ask for the tiles around each of
+    /// `dirs` (body-fixed unit vectors: the pilot, the camera): the finest
+    /// drawn tile under it and its neighbours at that level where they are
+    /// drawn too.
     pub fn update(
         &mut self,
         device: &wgpu::Device,
@@ -49,7 +50,7 @@ impl GroundCache {
         (key, spin): (MapKey, V3),
         tile_gen: &TileGen,
         drawn: &[(TileId, u32)],
-        eye_dir: V3,
+        dirs: &[V3],
     ) {
         if self.planet != Some(key) {
             *self = Self { planet: Some(key), ..Default::default() };
@@ -77,17 +78,27 @@ impl GroundCache {
         }
         self.pending = still;
 
-        let Some(&(under, _)) = drawn
+        let unders: Vec<TileId> = dirs
             .iter()
-            .filter(|(t, _)| t.contains_tile(TileId::containing(eye_dir, t.level.max(1))))
-            .max_by_key(|(t, _)| t.level)
-        else {
-            return;
-        };
-        let wanted: Vec<(TileId, u32)> = std::iter::once(under)
-            .chain(SIDES.iter().map(|&s| under.neighbour(s)))
-            .filter_map(|t| drawn.iter().find(|d| d.0 == t).copied())
+            .filter_map(|&d| {
+                drawn
+                    .iter()
+                    .filter(|(t, _)| t.contains_tile(TileId::containing(d, t.level.max(1))))
+                    .max_by_key(|(t, _)| t.level)
+            })
+            .map(|&(t, _)| t)
             .collect();
+        let Some(coarsest) = unders.iter().map(|t| t.level).min() else { return };
+        let mut wanted: Vec<(TileId, u32)> = Vec::new();
+        for &under in &unders {
+            for t in std::iter::once(under).chain(SIDES.iter().map(|&s| under.neighbour(s))) {
+                if let Some(&d) = drawn.iter().find(|d| d.0 == t)
+                    && !wanted.contains(&d)
+                {
+                    wanted.push(d);
+                }
+            }
+        }
         for (tile, layer) in wanted.iter().copied() {
             if self.pending.len() >= MAX_PENDING
                 || self.tiles.contains_key(&tile)
@@ -99,7 +110,7 @@ impl GroundCache {
         }
         if self.tiles.len() > MAX_CACHED {
             let keep: Vec<TileId> = wanted.iter().map(|w| w.0).collect();
-            self.tiles.retain(|t, _| keep.contains(t) || t.level + 2 < under.level);
+            self.tiles.retain(|t, _| keep.contains(t) || t.level + 2 < coarsest);
             while self.tiles.len() > MAX_CACHED {
                 let Some(&drop) = self.tiles.keys().find(|t| !keep.contains(t)) else { break };
                 self.tiles.remove(&drop);

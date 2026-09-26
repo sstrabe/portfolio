@@ -12,7 +12,9 @@
 //! Near a planet the chase camera keeps the horizon level: down is where
 //! gravity pulls, the orbit turns about the local vertical, and the camera
 //! holds still in the planet's frame while the ship turns in view (as in
-//! KSP). Elsewhere it turns with the ship.
+//! KSP). Elsewhere it turns with the ship. It stays out of the ground: where
+//! its orbit would take it under, it's lifted along the vertical and
+//! re-aimed at the ship, so it slides over the ground.
 
 use kerr::pilot::Tetrad;
 use kerr::vec3::{self, V3};
@@ -42,6 +44,9 @@ pub struct ChaseCamera {
     /// Whether [`ChaseCamera::follow`] has run: the first levelling is
     /// immediate, later ones ease the roll out.
     followed: bool,
+    /// How far (m) the camera is lifted along the vertical to stay
+    /// [`GROUND_CLEARANCE_M`] above the ground.
+    raise: f64,
 }
 
 /// The planet frame a level orbit is held in.
@@ -68,6 +73,8 @@ pub const MIN_DISTANCE: f64 = 36.0;
 pub const MAX_DISTANCE: f64 = 400.0;
 /// Time constant of the roll easing out when the camera levels, s.
 const ROLL_EASE_S: f64 = 0.4;
+/// The chase camera keeps at least this far above the ground, m.
+pub const GROUND_CLEARANCE_M: f64 = 3.0;
 
 impl Default for ChaseCamera {
     fn default() -> Self {
@@ -77,6 +84,7 @@ impl Default for ChaseCamera {
             distance: DEFAULT_DISTANCE,
             level: None,
             followed: false,
+            raise: 0.0,
         }
     }
 }
@@ -126,8 +134,9 @@ impl ChaseCamera {
     /// Follow the local vertical each frame (`None` away from planets):
     /// level the orbit on arriving near a planet, carry it round as up
     /// turns while the ship moves over the planet, and hand it back to the
-    /// ship frame on leaving.
-    pub fn follow(&mut self, vertical: Option<Vertical>, dt: f64) {
+    /// ship frame on leaving. `height` gives how high (m) a ship-frame
+    /// point is above the ground there, to keep the camera out of it.
+    pub fn follow(&mut self, vertical: Option<Vertical>, dt: f64, height: impl Fn(&Vertical, V3) -> Option<f64>) {
         let first = !self.followed;
         self.followed = true;
         match (self.level, vertical) {
@@ -157,6 +166,13 @@ impl ChaseCamera {
             }
             (None, None) => {}
         }
+        self.raise = match self.level {
+            Some(lv) => {
+                let at = vec3::axpy(TARGET, -self.distance, self.ship_orbit()[0]);
+                height(&lv.vertical, at).map_or(0.0, |h| (GROUND_CLEARANCE_M - h).max(0.0))
+            }
+            None => 0.0,
+        };
     }
 
     /// The orbit's axes in the ship frame, with any roll still easing out.
@@ -170,8 +186,20 @@ impl ChaseCamera {
         if !self.chase {
             return Pose { pos: [0.0; 3], axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
         }
-        let [f, l, u] = self.ship_orbit();
-        let pos = vec3::axpy(TARGET, -self.distance, f);
+        let [mut f, mut l, mut u] = self.ship_orbit();
+        let mut pos = vec3::axpy(TARGET, -self.distance, f);
+        if let Some(lv) = self.level.filter(|_| self.raise > 0.0) {
+            // Lifted out of the ground and turned to look at the ship again.
+            pos = vec3::axpy(pos, self.raise, combine(&lv.vertical.axes, lv.vertical.up));
+            let aim = vec3::normalize(vec3::sub(TARGET, pos));
+            let axis = vec3::cross(f, aim);
+            let s = vec3::norm(axis);
+            if s > 1e-12 {
+                let (axis, angle) = (vec3::scale(axis, 1.0 / s), s.atan2(vec3::dot(f, aim)));
+                (l, u) = (vec3::rotate(l, axis, angle), vec3::rotate(u, axis, angle));
+            }
+            f = aim;
+        }
         // Tilted up by LIFT about the camera's left.
         Pose { pos, axes: [vec3::rotate(f, l, -LIFT), l, vec3::rotate(u, l, -LIFT)] }
     }
@@ -338,7 +366,7 @@ mod tests {
         let axis = vec3::normalize(axis);
         let axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]].map(|a| vec3::rotate(a, axis, angle));
         let planet = kerr::local::PlanetRef { star: 3, generation: 0, planet: 1 };
-        Vertical { planet, axes, up: vec3::normalize(up) }
+        Vertical { planet, axes, up: vec3::normalize(up), pos: [0.0; 3], angle: 0.0 }
     }
 
     /// The pose's axes in the planet frame.
@@ -358,7 +386,7 @@ mod tests {
         let mut cam = ChaseCamera { chase: true, ..Default::default() };
         let up = [0.3, -0.5, 0.8];
         let v = vertical([1.0, 2.0, -0.5], 0.9, up);
-        cam.follow(Some(v), 1.0 / 60.0);
+        cam.follow(Some(v), 1.0 / 60.0, |_, _| None);
         let level = |cam: &ChaseCamera, v: &Vertical| {
             let [_, l, u] = in_planet(cam, v);
             vec3::dot(l, v.up).abs() < 1e-9 && vec3::dot(u, v.up) > 0.0
@@ -368,7 +396,7 @@ mod tests {
         assert!(level(&cam, &v));
         let before = in_planet(&cam, &v);
         let turned = vertical([-0.2, 1.0, 0.4], 2.1, up);
-        cam.follow(Some(turned), 1.0 / 60.0);
+        cam.follow(Some(turned), 1.0 / 60.0, |_, _| None);
         assert!(close(in_planet(&cam, &turned), before, 1e-9));
     }
 
@@ -378,7 +406,7 @@ mod tests {
     fn carried_round_with_the_vertical() {
         let mut cam = ChaseCamera { chase: true, ..Default::default() };
         let mut v = vertical([0.0, 0.0, 1.0], 0.3, [0.0, 0.0, 1.0]);
-        cam.follow(Some(v), 1.0 / 60.0);
+        cam.follow(Some(v), 1.0 / 60.0, |_, _| None);
         cam.orbit(0.0, 1.2 + std::f64::consts::FRAC_PI_2);
         let over = |cam: &ChaseCamera, v: &Vertical| vec3::dot(in_planet(cam, v)[2], v.up) < 0.0;
         assert!(over(&cam, &v));
@@ -386,7 +414,7 @@ mod tests {
         for k in 1..=200 {
             let a = k as f64 * 0.01;
             v.up = [a.sin(), 0.0, a.cos()];
-            cam.follow(Some(v), 1.0 / 60.0);
+            cam.follow(Some(v), 1.0 / 60.0, |_, _| None);
             let now = in_planet(&cam, &v);
             assert!(close(now, prev, 0.012), "{k}");
             assert!(over(&cam, &v) && vec3::dot(now[1], v.up).abs() < 1e-9, "{k}");
@@ -399,21 +427,47 @@ mod tests {
     #[test]
     fn levelling_eases_in() {
         let mut cam = ChaseCamera { chase: true, ..Default::default() };
-        cam.follow(None, 1.0 / 60.0);
+        cam.follow(None, 1.0 / 60.0, |_, _| None);
         cam.orbit(0.3, 0.2);
         let v = vertical([1.0, 0.2, 0.1], 0.8, [0.1, 0.9, 0.3]);
         let before = cam.pose().axes;
-        cam.follow(Some(v), 1.0 / 60.0);
+        cam.follow(Some(v), 1.0 / 60.0, |_, _| None);
         assert!(close(cam.pose().axes, before, 1e-9));
         for _ in 0..300 {
-            cam.follow(Some(v), 1.0 / 60.0);
+            cam.follow(Some(v), 1.0 / 60.0, |_, _| None);
         }
         let [_, l, u] = in_planet(&cam, &v);
         assert!(vec3::dot(l, v.up).abs() < 1e-9 && vec3::dot(u, v.up) > 0.0);
         // Leaving hands the orbit back to the ship frame where it was.
         let at = cam.pose().axes;
-        cam.follow(None, 1.0 / 60.0);
+        cam.follow(None, 1.0 / 60.0, |_, _| None);
         assert!(close(cam.pose().axes, at, 1e-9));
+    }
+
+    /// Orbiting under the ground lifts the camera to its clearance, still
+    /// looking at the ship; above it nothing changes.
+    #[test]
+    fn stays_out_of_the_ground() {
+        let mut cam = ChaseCamera { chase: true, ..Default::default() };
+        let v = vertical([0.0, 0.0, 1.0], 0.0, [0.0, 0.0, 1.0]);
+        // Flat ground 11 m under the ship.
+        let ground = |_: &Vertical, x: V3| Some(x[2] + 11.0);
+        cam.follow(Some(v), 1.0 / 60.0, ground);
+        let above = cam.pose();
+        cam.follow(Some(v), 1.0 / 60.0, |_, _| None);
+        let now = cam.pose();
+        assert!(close(now.axes, above.axes, 1e-12) && vec3::norm(vec3::sub(now.pos, above.pos)) < 1e-9);
+        cam.orbit(0.0, -1.0);
+        cam.follow(Some(v), 1.0 / 60.0, |_, _| None);
+        assert!(cam.pose().pos[2] + 11.0 < -10.0, "{:?}", cam.pose().pos);
+        cam.follow(Some(v), 1.0 / 60.0, ground);
+        let p = cam.pose();
+        assert!((p.pos[2] + 11.0 - GROUND_CLEARANCE_M).abs() < 1e-9, "{:?}", p.pos);
+        // Still aimed at the orbit centre (before the LIFT tilt).
+        let aim = vec3::normalize(vec3::sub(TARGET, p.pos));
+        let f = vec3::rotate(p.axes[0], p.axes[1], LIFT);
+        assert!(vec3::norm(vec3::sub(f, aim)) < 1e-9);
+        assert!(vec3::dot(p.axes[1], [0.0, 0.0, 1.0]).abs() < 1e-9);
     }
 
     /// The default chase view is behind and above the ship, looking

@@ -29,6 +29,14 @@ pub fn run(o: &Options) -> Result<(), String> {
     s.fov_deg = o.fov;
     s.gpu.post.settings = o.optics;
     s.gpu.ship.camera.chase = o.chase;
+    // `KERR_CHASE_ORBIT=YAW,PITCH` (rad) turns the chase camera from its
+    // default, for reference shots.
+    if let Some([yaw, pitch]) = std::env::var("KERR_CHASE_ORBIT").ok().and_then(|v| {
+        let a: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        <[f64; 2]>::try_from(a).ok()
+    }) {
+        s.gpu.ship.camera.orbit(yaw, pitch);
+    }
     s.gpu.set_render_scale(o.scale.unwrap_or(1.0));
 
     let mut controls = Controls::default();

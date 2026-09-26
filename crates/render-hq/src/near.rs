@@ -520,7 +520,7 @@ impl NearField {
         {
             let planet = p.planet(&self.selection).clone();
             let eye = self.eye_body_km(p);
-            self.terrain.update(device, queue, (key, &planet), eye, pixel_angle, profiler);
+            self.terrain.update(device, queue, (key, &planet), (eye, p.pilot_body_km()), pixel_angle, profiler);
             view = self.terrain_view(&planet, eye, p.gpu.ids[3]);
         }
         queue.write_buffer(&self.terrain_view, 0, bytemuck::bytes_of(&view));
