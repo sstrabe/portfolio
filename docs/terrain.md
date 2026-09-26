@@ -35,8 +35,11 @@ in `docs/planets.md`.
 3. The shaders now have `GM_SLOT`. Up to 8 materials fit
    (`MAX_MATERIALS`).
 
-The texture only varies the brightness, normals and ambient occlusion. The
-colour is the biome's spectral reflectance, so a scan of any tint works.
+The colour is the biome's spectral reflectance; the scan varies its
+brightness, normals and ambient occlusion, and tints it by the scan's own
+colour variation (relative to its average, so a scan of any overall tint
+works). A material that is plant cover itself (grass) takes a fifth
+argument `true` to `scanned!`, so the biomes' plants don't hide it.
 
 ## Adding a biome
 
