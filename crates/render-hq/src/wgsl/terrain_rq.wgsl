@@ -15,7 +15,7 @@ struct TerrainView {
     eye: vec4<f32>,     // the pilot relative to the anchor (body-fixed km), altitude above the datum (km)
     up: vec4<f32>,      // body-fixed unit up at the pilot, planet radius (km)
     anchor: vec4<f32>,  // body-fixed unit direction of the anchor, its distance from the centre (km)
-    ids: vec4<u32>,     // planet slot with tiles (0xffffffff: none), unused, unused, unused
+    ids: vec4<u32>,     // planet slot with tiles (0xffffffff: none); boulders: the level that raises them, their cells' level, seed
     // Anchored noise varying the ground's brightness over metres to tens
     // of metres (`terrain::materials::VARIATION_M`, coarse first).
     variation: array<AnchorOctave, 4>,
@@ -191,6 +191,13 @@ fn tr_tile_surface(p: Planet, hp: ptr<function, SurfaceHit>, layer: u32, prim: u
     h.layer = layer;
     h.st = st;
     h.jitter = anchored_noise(terrain_view.variation[1], h.local) + 0.6 * anchored_noise(terrain_view.variation[2], h.local);
+    // On tiles fine enough to hold them, the boulders there.
+    let tile = layer_tiles[layer];
+    if (tile.y >= terrain_view.ids.y) {
+        let cell_level = terrain_view.ids.z;
+        let cell_km = terrain_view.up.w * 1.5707963 / f32(1u << cell_level);
+        h.boulder = boulders_at(tile, st, cell_level, cell_km, boulder_density(m), terrain_view.ids.w).y;
+    }
     h.axis_s = normalize(ts);
     h.axis_t = normalize(tt);
     *hp = h;

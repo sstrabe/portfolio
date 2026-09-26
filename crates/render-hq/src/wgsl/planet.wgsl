@@ -45,6 +45,8 @@ struct SurfaceHit {
     // Anchored noise (−1 to 1, metres to ten metres) that roughens the
     // biomes' boundaries on tiles; 0 elsewhere.
     jitter: f32,
+    // How much of the point is a boulder (`boulders.wgsl`; tiles only).
+    boulder: f32,
 }
 
 // The ground's centimetre detail at a hit (`terrain_micro`): brightness
@@ -324,7 +326,9 @@ fn biome_window(w: vec4<f32>, x: f32) -> f32 {
 }
 
 // `flat`: the cosine of the ground's slope (1 level).
-fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, baked: bool, flat: f32, jitter: f32) -> Material {
+// `tile`: on terrain tiles, the boundaries' jitter and the boulder share.
+fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, baked: bool, flat: f32, tile: vec2<f32>) -> Material {
+    let jitter = tile.x;
     var mat: Material;
     mat.emission = spec(0.0);
     // Weather and currents make the ice and snow lines ragged: a few K of
@@ -389,6 +393,16 @@ fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, b
     let seen = (1.0 - 0.85 * mat.cover) / total;
     for (var i = 0u; i < GM_COUNT; i++) {
         mat.ground[i] = ground[i / 4u][i % 4u] * seen;
+    }
+    // Boulders: bare rock of the land's kind, nothing growing on them.
+    let b = tile.y;
+    if (b > 0.0) {
+        mat.albedo = spec_mix(mat.albedo, spec_mix(refl_granite(), refl_basalt(), m.w), b);
+        mat.cover *= 1.0 - b;
+        for (var i = 0u; i < GM_COUNT; i++) {
+            mat.ground[i] *= 1.0 - b;
+        }
+        mat.ground[GM_ROCK] += b;
     }
     return mat;
 }
@@ -455,7 +469,7 @@ fn planet_material(tp: TerrainParams, hit: SurfaceHit, baked: bool) -> Material 
     switch (tp.kind) {
         case KIND_OCEAN: {
             let flat = dot(hit.normal, normalize(hit.pos));
-            return material_ocean_world(tp, hit.body, hit.height, hit.terrain, baked, flat, hit.jitter);
+            return material_ocean_world(tp, hit.body, hit.height, hit.terrain, baked, flat, vec2<f32>(hit.jitter, hit.boulder));
         }
         case KIND_DESERT: { return material_desert(hit.body, hit.terrain); }
         case KIND_ICE: { return material_ice(hit.terrain); }

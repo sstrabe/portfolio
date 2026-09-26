@@ -481,7 +481,12 @@ impl NearField {
             eye: f(vec3::sub(eye, anchor), r - planet.radius_km),
             up: f(vec3::scale(eye, 1.0 / r), planet.radius_km),
             anchor: f(vec3::normalize(anchor), vec3::norm(anchor)),
-            ids: [slot, 0, 0, 0],
+            ids: [
+                slot,
+                crate::terrain::rocks::level(planet.radius_km) as u32,
+                crate::terrain::rocks::cell_level(planet.radius_km) as u32,
+                crate::terrain::rocks::seed(planet.seed),
+            ],
             variation: crate::terrain::materials::variation_octaves(anchor, planet.seed),
         }
     }

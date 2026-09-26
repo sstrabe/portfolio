@@ -14,6 +14,7 @@ pub mod ground;
 pub mod maps;
 pub mod materials;
 pub mod probe;
+pub mod rocks;
 pub mod rt;
 pub mod tilegen;
 pub mod tiles;

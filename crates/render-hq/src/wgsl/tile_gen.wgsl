@@ -29,6 +29,9 @@ struct TileGenParams {
     t_eq: f32,
     // One per refined level, from TILE_REFINE_FROM.
     octaves: array<AnchorOctave, 16>,
+    // Boulders (`boulders.wgsl`): the level that raises them, their cells'
+    // level, the hash seed (bits), unused.
+    boulders: vec4<f32>,
 }
 
 struct TileFrame {
@@ -215,6 +218,12 @@ fn cs_tile_gen(@builtin(global_invocation_id) gid: vec3<u32>) {
             detail = mix(detail, 1.4 * tile_gullies(o, d, across), erode);
         }
         h += rough * detail;
+        // Boulders, raised once, at the level that resolves them.
+        if (level == u32(tg.boulders.x)) {
+            let cell_level = u32(tg.boulders.y);
+            let cell_km = tg.radius * 1.5707963 / f32(1u << cell_level);
+            h += boulders_at(job.tile, st, cell_level, cell_km, boulder_density(m), bitcast<u32>(tg.boulders.z)).x;
+        }
     }
     h = clamp(h, tp.lo, tp.hi);
     textureStore(tile_height, gid.xy, layer, vec4<f32>(h));

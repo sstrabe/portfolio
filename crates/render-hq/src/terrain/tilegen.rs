@@ -117,6 +117,9 @@ struct ParamsGpu {
     sea: f32,
     t_eq: f32,
     octaves: [OctaveGpu; 16],
+    /// Boulders (`terrain/rocks.rs`): the level that raises them, their
+    /// cells' level, the hash seed (bits), unused.
+    boulders: [f32; 4],
 }
 
 /// Mirrors `struct TileJob`, padded to the job stride.
@@ -359,6 +362,12 @@ impl TileGen {
             sea: planet.sea_level as f32,
             t_eq: planet.equilibrium_temperature as f32,
             octaves,
+            boulders: [
+                super::rocks::level(planet.radius_km) as f32,
+                super::rocks::cell_level(planet.radius_km) as f32,
+                f32::from_bits(super::rocks::seed(planet.seed)),
+                0.0,
+            ],
         };
         queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&params));
 
@@ -585,14 +594,16 @@ mod tests {
     }
 
     /// Mirror the shader's structs: `TileFrame` six vec4s, `TileJob` eight
-    /// (padded to the stride), `TileGenParams` two vec4s and 16 octaves.
+    /// (padded to the stride), `TileGenParams` two vec4s, 16 octaves and the
+    /// boulders' vec4.
     #[test]
     fn layouts() {
         assert_eq!(std::mem::size_of::<TileFrameGpu>(), 96);
         assert_eq!(std::mem::size_of::<JobGpu>() as u64, JOB_STRIDE);
         assert_eq!(std::mem::offset_of!(JobGpu, slots), 112);
         assert_eq!(std::mem::offset_of!(JobGpu, centre), 128);
-        assert_eq!(std::mem::size_of::<ParamsGpu>(), 32 + 16 * 32);
+        assert_eq!(std::mem::size_of::<ParamsGpu>(), 32 + 16 * 32 + 16);
+        assert_eq!(std::mem::offset_of!(ParamsGpu, boulders), 32 + 16 * 32);
         assert_eq!(TILE_TEXELS, 133);
     }
 

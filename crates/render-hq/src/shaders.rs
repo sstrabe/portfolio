@@ -41,7 +41,7 @@ pub fn trace(rt: bool) -> String {
             "trace.wgsl"
         ),
         if rt { wgsl!("ship_rq.wgsl") } else { wgsl!("ship_bvh.wgsl") },
-        if rt { wgsl!("anchor.wgsl", "terrain_rq.wgsl") } else { wgsl!("terrain_none.wgsl") },
+        if rt { wgsl!("anchor.wgsl", "boulders.wgsl", "terrain_rq.wgsl") } else { wgsl!("terrain_none.wgsl") },
         &crate::terrain::materials::wgsl_constants(),
     ]);
     // An `enable` directive has to come before any declaration.
@@ -123,7 +123,7 @@ pub fn probe() -> String {
 pub fn tile_gen() -> String {
     let mut s = String::from(::shaders::COMMON);
     s.push('\n');
-    s.push_str(wgsl!("cube.wgsl", "anchor.wgsl", "terrain.wgsl", "tile_gen.wgsl"));
+    s.push_str(wgsl!("cube.wgsl", "anchor.wgsl", "boulders.wgsl", "terrain.wgsl", "tile_gen.wgsl"));
     s
 }
 
