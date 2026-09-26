@@ -303,6 +303,16 @@ fn on_ground(world: &mut World, g: GroundStart, gpu: &Gpu) -> Result<String, Str
     let up = match g.site {
         Site::Here => up,
         Site::Island => {
+            // The shore on the land as the relief made it; then the land
+            // around it worn by water (the square the renderer keeps, the
+            // start well inside it), and the shore found again on the worn
+            // land: valleys reach the sea as bays.
+            let (first, _) = sunny_shore(&planet, &axes, up, &terrain_at, gpu)?;
+            let region = &gpu.near.terrain.tile_gen.region;
+            let key = (pref.star, pref.generation, pref.planet);
+            let centre = vec3::scale(terrain::to_body(&axes, first), planet.radius_km);
+            region.bake(&gpu.device, &gpu.queue, key, &planet, centre);
+            probe.use_region(region);
             let (site, sea) = sunny_shore(&planet, &axes, up, &terrain_at, gpu)?;
             sea_side = Some(sea);
             site

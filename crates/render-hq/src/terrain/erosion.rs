@@ -21,7 +21,7 @@ pub const CELL_M: f64 = 125.0;
 /// Baked again when the eye is this far (km, along the ground) from the
 /// square's centre, and only while it's this low (km): from higher the
 /// tiles are too coarse to use it, and in orbit the eye is always far.
-pub const REBAKE_KM: f64 = 40.0;
+pub const REBAKE_KM: f64 = 50.0;
 pub const BAKE_BELOW_KM: f64 = 30.0;
 
 /// Whether to bake for an eye at body-fixed `eye_km` over a planet of
@@ -44,6 +44,8 @@ const DT_YEARS: f32 = 1.0e4;
 const ERODIBILITY: f32 = 1.0e-6;
 const AREA_EXPONENT: f32 = 0.5;
 const DIFFUSIVITY: f32 = 0.3;
+/// Steps of the shore distance's spread (cells; even, see `bake`).
+const SHORE_STEPS: u32 = 16;
 
 /// Mirrors `struct ErosionParams` in `erosion.wgsl`.
 #[repr(C)]
@@ -57,16 +59,16 @@ struct ErosionParams {
     stream: [f32; 4],
 }
 
-/// Mirrors `struct Region` in `tile_gen.wgsl`: where the square is (unit
+/// Mirrors `struct Region` in `region.wgsl`: where the square is (unit
 /// centre and cell size km; unit east and cells a side, 0 for none; unit
-/// north).
+/// north) and the planet it's for (seed bits, radius km).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
 pub struct RegionGpu {
     pub centre: [f32; 4],
     pub east: [f32; 4],
     pub north: [f32; 4],
-    pub pad: [f32; 4],
+    pub planet: [f32; 4],
 }
 
 pub struct RegionErosion {
@@ -75,9 +77,10 @@ pub struct RegionErosion {
     pub region: wgpu::Buffer,
     params: wgpu::Buffer,
     groups: [wgpu::BindGroup; 2],
-    pipelines: [wgpu::ComputePipeline; 5],
-    /// The planet and centre (body-fixed unit direction) last baked.
-    pub baked: Option<(MapKey, V3)>,
+    pipelines: [wgpu::ComputePipeline; 7],
+    /// The planet and centre (body-fixed unit direction) last baked, and
+    /// how many bakes so far (whoever baked: the start, or the field).
+    state: std::sync::Mutex<(Option<(MapKey, V3)>, u32)>,
 }
 
 /// East and north along the ground at unit direction `c` (body-fixed, the
@@ -100,7 +103,7 @@ impl RegionErosion {
         let area = [buffer("erosion area a", cells * 4, U::STORAGE), buffer("erosion area b", cells * 4, U::STORAGE)];
         let initial = buffer("erosion initial", cells * 4, U::STORAGE);
         let receiver = buffer("erosion receivers", cells * 4, U::STORAGE);
-        let delta = buffer("erosion delta", cells * 4, U::STORAGE);
+        let delta = buffer("erosion delta", cells * 8, U::STORAGE);
         let params = buffer("erosion params", std::mem::size_of::<ErosionParams>() as u64, U::UNIFORM | U::COPY_DST);
         let region = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("erosion region"),
@@ -185,8 +188,10 @@ impl RegionErosion {
             pipeline("cs_erosion_area"),
             pipeline("cs_erosion_step"),
             pipeline("cs_erosion_finish"),
+            pipeline("cs_shore_init"),
+            pipeline("cs_shore_step"),
         ];
-        Self { delta, region, params, groups, pipelines, baked: None }
+        Self { delta, region, params, groups, pipelines, state: std::sync::Mutex::new((None, 0)) }
     }
 
     /// Whether the square should be baked (again) for an eye at body-fixed
@@ -194,12 +199,22 @@ impl RegionErosion {
     /// [`bake_wanted`]).
     pub fn wanted(&self, key: MapKey, planet: &Planet, eye_km: V3) -> bool {
         let wet = planet.kind == kerr::planets::PlanetKind::Ocean;
-        wet && bake_wanted(self.baked, key, planet.radius_km, eye_km)
+        wet && bake_wanted(self.baked(), key, planet.radius_km, eye_km)
+    }
+
+    /// The planet and centre last baked.
+    pub fn baked(&self) -> Option<(MapKey, V3)> {
+        self.state.lock().map(|s| s.0).unwrap_or(None)
+    }
+
+    /// Bakes so far: a change means the terrain has changed under the tiles.
+    pub fn bakes(&self) -> u32 {
+        self.state.lock().map(|s| s.1).unwrap_or(0)
     }
 
     /// Bake the square centred under body-fixed `eye_km` (submitted now;
     /// the GPU finishes it before the tiles that read it).
-    pub fn bake(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: MapKey, planet: &Planet, eye_km: V3) {
+    pub fn bake(&self, device: &wgpu::Device, queue: &wgpu::Queue, key: MapKey, planet: &Planet, eye_km: V3) {
         let c = vec3::normalize(eye_km);
         let (east, north) = tangent_axes(c);
         let f = |v: V3, w: f32| [v[0] as f32, v[1] as f32, v[2] as f32, w];
@@ -221,7 +236,7 @@ impl RegionErosion {
             centre: f(c, (CELL_M * 1e-3) as f32),
             east: f(east, REGION_N as f32),
             north: f(north, 0.0),
-            pad: [0.0; 4],
+            planet: [f32::from_bits(planet.seed), planet.radius_km as f32, 0.0, 0.0],
         };
         queue.write_buffer(&self.region, 0, bytemuck::bytes_of(&region));
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("erosion") });
@@ -241,10 +256,21 @@ impl RegionErosion {
                 run(2, g);
                 run(3, g);
             }
-            run(4, STEPS as usize % 2);
+            // The final heights are in the buffer group `g0` reads; the
+            // shore distance spreads from the sea over SHORE_STEPS (even)
+            // steps, ending where group 1 − g0 reads it (whose h_out is the
+            // final heights).
+            let g0 = STEPS as usize % 2;
+            run(5, g0);
+            for k in 0..SHORE_STEPS as usize {
+                run(6, (g0 + 1 + k) % 2);
+            }
+            run(4, 1 - g0);
         }
         queue.submit([enc.finish()]);
-        self.baked = Some((key, c));
+        if let Ok(mut s) = self.state.lock() {
+            *s = (Some((key, c)), s.1 + 1);
+        }
     }
 }
 

@@ -75,10 +75,14 @@ fn planet_is_giant(p: Planet) -> bool {
     return p.ids.x == KIND_GAS_GIANT || p.ids.x == KIND_ICE_GIANT;
 }
 
+// The regional erosion (`region.wgsl`), as the tiles have it.
+@group(1) @binding(16) var<uniform> region: Region;
+@group(1) @binding(17) var<storage, read> region_cells: array<vec2<f32>>;
+
 // Solid height (km) and macro channels at body-fixed direction q.
 fn planet_height(tp: TerrainParams, q: vec3<f32>, lod: f32) -> vec4<f32> {
     let m = terrain_macro(tp, q, lod);
-    return vec4<f32>(terrain_solid(tp, q, m, lod), m.yzw);
+    return vec4<f32>(terrain_solid(tp, q, m, lod) + region_delta(q, tp.seed, tp.radius, lod), m.yzw);
 }
 
 fn planet_surface_hit(p: Planet, o: vec3<f32>, dir: vec3<f32>, u_max: f32, fp: f32, scale: f32) -> SurfaceHit {

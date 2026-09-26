@@ -30,6 +30,7 @@ pub fn trace(rt: bool) -> String {
             "cube.wgsl",
             "terrain.wgsl",
             "maps.wgsl",
+            "region.wgsl",
             "planet.wgsl",
             "atmo_common.wgsl",
             "atmosphere.wgsl",
@@ -114,7 +115,7 @@ pub fn overlay() -> String {
 pub fn probe() -> String {
     let mut s = String::from(::shaders::COMMON);
     s.push('\n');
-    s.push_str(wgsl!("cube.wgsl", "terrain.wgsl", "probe.wgsl"));
+    s.push_str(wgsl!("cube.wgsl", "terrain.wgsl", "region.wgsl", "probe.wgsl"));
     s
 }
 
@@ -123,7 +124,7 @@ pub fn probe() -> String {
 pub fn tile_gen() -> String {
     let mut s = String::from(::shaders::COMMON);
     s.push('\n');
-    s.push_str(wgsl!("cube.wgsl", "anchor.wgsl", "boulders.wgsl", "terrain.wgsl", "tile_gen.wgsl"));
+    s.push_str(wgsl!("cube.wgsl", "anchor.wgsl", "boulders.wgsl", "terrain.wgsl", "region.wgsl", "tile_gen.wgsl"));
     s
 }
 

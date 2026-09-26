@@ -25,7 +25,8 @@ struct ErosionParams {
 @group(0) @binding(5) var<storage, read_write> receiver: array<u32>;
 @group(0) @binding(6) var<storage, read_write> area_in: array<f32>;
 @group(0) @binding(7) var<storage, read_write> area_out: array<f32>;
-@group(0) @binding(8) var<storage, read_write> delta: array<f32>;
+// Per cell: the height change (km) and the distance from the shore (m).
+@group(0) @binding(8) var<storage, read_write> delta: array<vec2<f32>>;
 
 fn er_n() -> i32 {
     return i32(ep.east.w);
@@ -154,8 +155,42 @@ fn cs_erosion_step(@builtin(global_invocation_id) gid: vec3<u32>) {
     h_out[i] = hn;
 }
 
-// The height change (km) to add, faded out towards the square's edges (the
-// tile generator fades it near the coast, from each point's own height).
+// Distance from the shore (cells) of the eroded land, spread from the sea
+// a cell a step (area_in/area_out reused, the erosion done): start at 0 in
+// the sea (final heights in h_in), unknown on land.
+@compute @workgroup_size(8, 8)
+fn cs_shore_init(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let c = er_cell(gid);
+    let n = er_n();
+    if (c.x >= n || c.y >= n) {
+        return;
+    }
+    let i = er_index(c.x, c.y);
+    area_out[i] = select(1e9, 0.0, h_in[i] <= 0.0);
+}
+
+@compute @workgroup_size(8, 8)
+fn cs_shore_step(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let c = er_cell(gid);
+    let n = er_n();
+    if (c.x >= n || c.y >= n) {
+        return;
+    }
+    let i = er_index(c.x, c.y);
+    var d = area_in[i];
+    for (var k = 0; k < 8; k++) {
+        let o = c + ER_OFFSETS[k];
+        if (o.x < 0 || o.y < 0 || o.x >= n || o.y >= n) {
+            continue;
+        }
+        d = min(d, area_in[er_index(o.x, o.y)] + select(1.0, 1.41421356, k >= 4));
+    }
+    area_out[i] = d;
+}
+
+// The height change (km), faded out towards the square's edges, and the
+// distance from the shore (m, up to 2 km). Run with the group whose h_out
+// holds the final heights and area_in the shore distances.
 @compute @workgroup_size(8, 8)
 fn cs_erosion_finish(@builtin(global_invocation_id) gid: vec3<u32>) {
     let c = er_cell(gid);
@@ -165,5 +200,6 @@ fn cs_erosion_finish(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let i = er_index(c.x, c.y);
     let edge = f32(min(min(c.x, c.y), min(n - 1 - c.x, n - 1 - c.y))) / f32(n);
-    delta[i] = (h_in[i] - initial[i]) * 0.001 * smoothstep(0.0, 0.1, edge);
+    let change = (h_out[i] - initial[i]) * 0.001 * smoothstep(0.0, 0.1, edge);
+    delta[i] = vec2<f32>(change, min(area_in[i] * ep.centre.w, 2000.0));
 }

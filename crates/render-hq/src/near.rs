@@ -393,6 +393,16 @@ impl NearField {
                 ),
                 // The biome table (`planet.wgsl`).
                 entry(14, uniform()),
+                // The regional erosion (`region.wgsl`).
+                entry(16, uniform()),
+                entry(
+                    17,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
             ]
             .into_iter()
             .chain(rt_entries)
@@ -439,6 +449,8 @@ impl NearField {
             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&maps.sampler) },
             wgpu::BindGroupEntry { binding: 4, resource: terrain_view.as_entire_binding() },
             wgpu::BindGroupEntry { binding: 14, resource: biomes.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 16, resource: terrain.tile_gen.region.region.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 17, resource: terrain.tile_gen.region.delta.as_entire_binding() },
         ];
         if let Some(accel) = &terrain.tile_gen.accel {
             entries.extend([

@@ -41,6 +41,9 @@ pub struct Sample {
 pub struct Probe {
     pipeline: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
+    /// The regional erosion it sees (`use_region`; none at first): its
+    /// square and cells.
+    region: std::cell::RefCell<(wgpu::Buffer, wgpu::Buffer)>,
 }
 
 impl Probe {
@@ -62,6 +65,8 @@ impl Probe {
                 entry(1, B::Uniform),
                 entry(2, B::Storage { read_only: true }),
                 entry(3, B::Storage { read_only: false }),
+                entry(4, B::Uniform),
+                entry(5, B::Storage { read_only: true }),
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -77,7 +82,23 @@ impl Probe {
             compilation_options: Default::default(),
             cache: None,
         });
-        Self { pipeline, layout }
+        let none = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("probe: no erosion"),
+            contents: bytemuck::bytes_of(&super::erosion::RegionGpu::default()),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let no_cells = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("probe: no erosion cells"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        Self { pipeline, layout, region: std::cell::RefCell::new((none, no_cells)) }
+    }
+
+    /// See the terrain as worn by `region` from now on (as the tiles do).
+    pub fn use_region(&self, region: &super::erosion::RegionErosion) {
+        *self.region.borrow_mut() = (region.region.clone(), region.delta.clone());
     }
 
     /// Terrain at body-fixed unit directions `dirs` (see
@@ -133,6 +154,8 @@ impl Probe {
                 wgpu::BindGroupEntry { binding: 1, resource: uniform.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: self.region.borrow().0.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: self.region.borrow().1.as_entire_binding() },
             ],
         });
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("terrain probe") });

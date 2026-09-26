@@ -60,6 +60,8 @@ pub struct TerrainField {
     plant_age: u32,
     /// Wall-clock time (s) for the plants' sway; set before `update`.
     pub time_s: f64,
+    /// The regional erosion's bakes the tiles have seen.
+    region_seen: u32,
 }
 
 /// Plants are placed again when the eye has moved this far (km; the
@@ -82,6 +84,7 @@ impl TerrainField {
             placing: None,
             plant_age: 0,
             time_s: 0.0,
+            region_seen: 0,
         }
     }
 
@@ -109,9 +112,14 @@ impl TerrainField {
             None => true,
         };
         // Erode the land around the eye (again when it has travelled far);
-        // tiles made before don't have it.
+        // after any bake (here or at a start) the tiles made before are
+        // stale.
         if self.tile_gen.region.wanted(key, planet, eye_km) {
             self.tile_gen.region.bake(device, queue, key, planet, eye_km);
+        }
+        let bakes = self.tile_gen.region.bakes();
+        if bakes != self.region_seen {
+            self.region_seen = bakes;
             self.tile_gen.flush();
             self.ground = GroundCache::default();
             self.plants_at = None;
