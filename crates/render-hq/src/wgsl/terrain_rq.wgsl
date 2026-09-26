@@ -190,6 +190,7 @@ fn tr_tile_surface(p: Planet, hp: ptr<function, SurfaceHit>, layer: u32, prim: u
     h.normal = normalize(planet_inertial(p, nb, h.time));
     h.layer = layer;
     h.st = st;
+    h.jitter = anchored_noise(terrain_view.variation[1], h.local) + 0.6 * anchored_noise(terrain_view.variation[2], h.local);
     h.axis_s = normalize(ts);
     h.axis_t = normalize(tt);
     *hp = h;
@@ -250,6 +251,10 @@ fn terrain_micro(p: Planet, h: SurfaceHit, mat: Material) -> Micro {
             continue;
         }
         let lod = log2(max(h.lod * 1024.0 / span, 1.0));
+        // Past the coarse mip the detrended detail is nil.
+        if (lod >= 7.0) {
+            continue;
+        }
         let uv = tr_ground_uv(tile, h.st, repeat);
         let a = textureSampleLevel(ground_albedo, ground_sampler, uv, i, lod);
         let d = textureSampleLevel(ground_detail, ground_sampler, uv, i, lod);

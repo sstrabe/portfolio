@@ -42,6 +42,9 @@ struct SurfaceHit {
     st: vec2<f32>,
     axis_s: vec3<f32>,
     axis_t: vec3<f32>,
+    // Anchored noise (−1 to 1, metres to ten metres) that roughens the
+    // biomes' boundaries on tiles; 0 elsewhere.
+    jitter: f32,
 }
 
 // The ground's centimetre detail at a hit (`terrain_micro`): brightness
@@ -321,7 +324,7 @@ fn biome_window(w: vec4<f32>, x: f32) -> f32 {
 }
 
 // `flat`: the cosine of the ground's slope (1 level).
-fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, baked: bool, flat: f32) -> Material {
+fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, baked: bool, flat: f32, jitter: f32) -> Material {
     var mat: Material;
     mat.emission = spec(0.0);
     // Weather and currents make the ice and snow lines ragged: a few K of
@@ -351,7 +354,11 @@ fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, b
     if (baked) {
         moisture = climate.z;
     }
-    var v = array<f32, 6>(temp, moisture, h * 1000.0, 1.0 - flat, m.y, m.w);
+    // Boundaries wander a little: a third of the height (the swash line
+    // stays tidy, the plants' edge on the berm wanders a metre), a few %
+    // in moisture.
+    let h_m = h * 1000.0;
+    var v = array<f32, 6>(temp, moisture + 0.06 * jitter, h_m * (1.0 + 0.35 * jitter), 1.0 - flat, m.y, m.w);
     var total = 0.0;
     var albedo = spec(0.0);
     var ground = array<vec4<f32>, 2>(vec4<f32>(0.0), vec4<f32>(0.0));
@@ -448,7 +455,7 @@ fn planet_material(tp: TerrainParams, hit: SurfaceHit, baked: bool) -> Material 
     switch (tp.kind) {
         case KIND_OCEAN: {
             let flat = dot(hit.normal, normalize(hit.pos));
-            return material_ocean_world(tp, hit.body, hit.height, hit.terrain, baked, flat);
+            return material_ocean_world(tp, hit.body, hit.height, hit.terrain, baked, flat, hit.jitter);
         }
         case KIND_DESERT: { return material_desert(hit.body, hit.terrain); }
         case KIND_ICE: { return material_ice(hit.terrain); }
