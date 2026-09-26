@@ -165,7 +165,12 @@ fn cs_tile_gen(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Slopes stay roughly constant from octave to octave (as in
         // `terrain_detail`): ridged ranges rough, lowlands gentle.
         let k = tp.relief / 16.0;
-        let rough = (mix(0.12, 3.0, m.x * m.x) * m.w + 0.06) * k * (4.0 * spacing / tp.split);
+        var rough = (mix(0.12, 3.0, m.x * m.x) * m.w + 0.06) * k * (4.0 * spacing / tp.split);
+        if (tp.liquid == FILL_WATER) {
+            // Beaches and the shelf stay smooth (the waves keep them so;
+            // the sand's own texture gives the centimetres).
+            rough *= mix(0.1, 1.0, smoothstep(0.004, 0.015, abs(h - 0.0015)));
+        }
         h += rough * anchored_noise(o, d);
     }
     h = clamp(h, tp.lo, tp.hi);

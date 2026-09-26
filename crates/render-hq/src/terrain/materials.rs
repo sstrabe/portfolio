@@ -93,6 +93,21 @@ pub static MATERIALS: &[GroundMaterial] = &[
     scanned!("SOIL", "forest_ground_04", 21, 0.06),
 ];
 
+/// Wavelengths (m) of the anchored noise that varies the ground's
+/// brightness over metres to tens of metres (and clumps the plants), so the
+/// textures' repeats don't show; and the seed offset of its octaves.
+pub const VARIATION_M: [f64; 4] = [40.0, 12.0, 3.5, 1.0];
+const VARIATION_SEED: u32 = 7100;
+
+/// The variation octaves anchored at `anchor_km` (body-fixed) for a planet
+/// with `seed`.
+pub fn variation_octaves(anchor_km: kerr::vec3::V3, seed: u32) -> [super::anchor::OctaveGpu; 4] {
+    let octaves =
+        VARIATION_M.iter().enumerate().map(|(i, m)| (1000.0 / m, seed.wrapping_add(VARIATION_SEED + i as u32)));
+    let a = super::anchor::Anchor::new(anchor_km, octaves);
+    std::array::from_fn(|i| a.octaves[i])
+}
+
 /// Texture size (texels a side) of every map.
 pub const TEXTURE_SIZE: u32 = 1024;
 /// Room in the shaders' parameter table.

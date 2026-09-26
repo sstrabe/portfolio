@@ -273,7 +273,7 @@ impl Gpu {
                 storage_image(4),
             ],
         });
-        let near = NearField::new(&device, rt);
+        let near = NearField::new(&device, &queue, rt);
         let atmo = Atmospheres::new(&device, &queue);
         let nebula = Nebulae::new(&device, &queue, &frame_buf);
         let ship = Ship::new(&device, &queue, rt);

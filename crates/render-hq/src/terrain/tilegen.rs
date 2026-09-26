@@ -149,6 +149,9 @@ pub struct TileGen {
     pub material: wgpu::Texture,
     /// Per layer the lowest and highest height inside the tile (mm, i32).
     pub range: wgpu::Buffer,
+    /// Per layer the tile it holds (face, level, x, y; a uniform array for
+    /// the trace, which lays the ground textures on the face grid).
+    pub layer_tiles: wgpu::Buffer,
     params: wgpu::Buffer,
     jobs: wgpu::Buffer,
     pipeline: wgpu::ComputePipeline,
@@ -317,6 +320,8 @@ impl TileGen {
             stamps: vec![0; layers as usize],
             ranges_dirty: false,
             range_readback: buffer("tile ranges read-back", layers as u64 * 8, U::MAP_READ | U::COPY_DST),
+            // Sized for the full atlas: the shader declares all of it.
+            layer_tiles: buffer("tile ids per layer", ATLAS_LAYERS as u64 * 16, U::UNIFORM | U::COPY_DST),
             readback_stamps: vec![0; layers as usize],
             readback_state: Arc::new(AtomicU8::new(IDLE)),
         }
@@ -396,6 +401,7 @@ impl TileGen {
             self.ranges_dirty = true;
             queue.write_buffer(&self.jobs, i as u64 * JOB_STRIDE, bytemuck::bytes_of(job));
             queue.write_buffer(&self.range, job.slots[0] as u64 * 8, bytemuck::cast_slice(&[i32::MAX, i32::MIN]));
+            queue.write_buffer(&self.layer_tiles, job.slots[0] as u64 * 16, bytemuck::bytes_of(&job.tile));
         }
         if jobs.is_empty() {
             return done;

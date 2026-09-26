@@ -273,6 +273,8 @@ pub struct NearField {
     /// The camera's place relative to the pilot, in the view axes (km): the
     /// terrain is traced from the chase camera, not from inside the ship.
     camera_km: V3,
+    /// The ground's scanned materials (with ray-tracing hardware).
+    pub materials: Option<crate::terrain::materials::MaterialTextures>,
 }
 
 /// Mirrors `struct TerrainView` in `terrain_rq.wgsl`.
@@ -283,12 +285,13 @@ struct TerrainViewGpu {
     up: [f32; 4],
     anchor: [f32; 4],
     ids: [u32; 4],
+    variation: [crate::terrain::anchor::OctaveGpu; 4],
 }
 
 impl TerrainViewGpu {
     /// No planet has tiles in the trace.
     fn none() -> Self {
-        Self { eye: [0.0; 4], up: [0.0; 4], anchor: [0.0; 4], ids: [u32::MAX, 0, 0, 0] }
+        Self { eye: [0.0; 4], up: [0.0; 4], anchor: [0.0; 4], ids: [u32::MAX, 0, 0, 0], variation: Default::default() }
     }
 }
 
@@ -298,7 +301,7 @@ const MAPS_RANGE_RADII: f64 = 50.0;
 
 impl NearField {
     /// `rt`: the terrain gets BLASes for hardware ray queries.
-    pub fn new(device: &wgpu::Device, rt: bool) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, rt: bool) -> Self {
         let storage = |binding| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -320,6 +323,11 @@ impl NearField {
             view_dimension: wgpu::TextureViewDimension::D2Array,
             multisampled: false,
         };
+        let uniform = || wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
         // With ray queries, the terrain tiles (`terrain_rq.wgsl`).
         let rt_entries: Vec<wgpu::BindGroupLayoutEntry> = if rt {
             vec![
@@ -334,6 +342,13 @@ impl NearField {
                         min_binding_size: None,
                     },
                 ),
+                // The ground materials: albedo and detail arrays, their
+                // sampler, parameters, and the tile in each atlas layer.
+                entry(9, array(wgpu::TextureSampleType::Float { filterable: true })),
+                entry(10, array(wgpu::TextureSampleType::Float { filterable: true })),
+                entry(11, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+                entry(12, uniform()),
+                entry(13, uniform()),
             ]
         } else {
             Vec::new()
@@ -389,6 +404,11 @@ impl NearField {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let terrain = crate::terrain::field::TerrainField::new(device, rt);
+        // The scanned materials are compiled in, so they can only fail to
+        // decode if the assets are broken.
+        let ground_materials = rt.then(|| {
+            crate::terrain::materials::MaterialTextures::new(device, queue).expect("the ground materials decode")
+        });
         let array_view = |t: &wgpu::Texture| {
             t.create_view(&wgpu::TextureViewDescriptor {
                 dimension: Some(wgpu::TextureViewDimension::D2Array),
@@ -414,6 +434,15 @@ impl NearField {
                 wgpu::BindGroupEntry { binding: 8, resource: accel.vertices.as_entire_binding() },
             ]);
         }
+        if let Some(m) = &ground_materials {
+            entries.extend([
+                wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::TextureView(&m.albedo) },
+                wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(&m.detail) },
+                wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::Sampler(&m.sampler) },
+                wgpu::BindGroupEntry { binding: 12, resource: m.params.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 13, resource: terrain.tile_gen.layer_tiles.as_entire_binding() },
+            ]);
+        }
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("near field"),
             layout: &layout,
@@ -429,6 +458,7 @@ impl NearField {
             selection: Selection::default(),
             maps,
             terrain,
+            materials: ground_materials,
         }
     }
 
@@ -444,6 +474,7 @@ impl NearField {
             up: f(vec3::scale(eye, 1.0 / r), planet.radius_km),
             anchor: f(vec3::normalize(anchor), vec3::norm(anchor)),
             ids: [slot, 0, 0, 0],
+            variation: crate::terrain::materials::variation_octaves(anchor, planet.seed),
         }
     }
 

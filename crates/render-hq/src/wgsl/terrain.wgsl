@@ -620,7 +620,40 @@ fn terrain_detail(tp: TerrainParams, q: vec3<f32>, m: vec4<f32>, lod: f32) -> f3
 
 // Solid height (km) at q: macro plus detail, kept inside [lo, hi].
 fn terrain_solid(tp: TerrainParams, q: vec3<f32>, m: vec4<f32>, lod: f32) -> f32 {
-    return clamp(m.x + terrain_detail(tp, q, m, lod), tp.lo, tp.hi);
+    var h = m.x + terrain_detail(tp, q, m, lod);
+    if (tp.liquid == FILL_WATER) {
+        h = terrain_coast(h);
+    }
+    return clamp(h, tp.lo, tp.hi);
+}
+
+// Coasts of worlds with seas, shaped as waves and wind sort the sediment:
+// a shallow shelf offshore, a wide beach rising gently from the water, and
+// a steeper rise behind it to the land. A monotone remap of the height
+// (heights in km) that keeps 0 at 0, so coastlines stay where the relief
+// puts them; Hermite segments through (m in, m out, slope) knots.
+fn terrain_coast(h: f32) -> f32 {
+    let x = h * 1000.0;
+    if (x <= -60.0 || x >= 30.0) {
+        return h;
+    }
+    // Knots: (−60, −60, 1), (−20, −10, 0.5), (0, 0, 0.3), (12, 3, 0.3),
+    // (30, 30, 1).
+    var k = array<vec4<f32>, 2>(vec4<f32>(-60.0, -60.0, 1.0, 0.0), vec4<f32>(-20.0, -10.0, 0.5, 0.0));
+    if (x >= 12.0) {
+        k = array<vec4<f32>, 2>(vec4<f32>(12.0, 3.0, 0.3, 0.0), vec4<f32>(30.0, 30.0, 1.0, 0.0));
+    } else if (x >= 0.0) {
+        k = array<vec4<f32>, 2>(vec4<f32>(0.0, 0.0, 0.3, 0.0), vec4<f32>(12.0, 3.0, 0.3, 0.0));
+    } else if (x >= -20.0) {
+        k = array<vec4<f32>, 2>(vec4<f32>(-20.0, -10.0, 0.5, 0.0), vec4<f32>(0.0, 0.0, 0.3, 0.0));
+    }
+    let w = k[1].x - k[0].x;
+    let t = (x - k[0].x) / w;
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let y = (2.0 * t3 - 3.0 * t2 + 1.0) * k[0].y + (t3 - 2.0 * t2 + t) * w * k[0].z
+        + (-2.0 * t3 + 3.0 * t2) * k[1].y + (t3 - t2) * w * k[1].z;
+    return y * 0.001;
 }
 
 // Height of the visible surface: the solid ground or, over basins, the

@@ -35,6 +35,22 @@ struct SurfaceHit {
     shadow: f32,
     // The share of the sky the terrain hides (0 open; zero by default).
     sky_occlusion: f32,
+    // On a tile: its atlas layer, the place in it (0–1), and the body-fixed
+    // unit ground directions of increasing s and t (for the ground
+    // textures, which lie on the tiles' face grid).
+    layer: u32,
+    st: vec2<f32>,
+    axis_s: vec3<f32>,
+    axis_t: vec3<f32>,
+}
+
+// The ground's centimetre detail at a hit (`terrain_micro`): brightness
+// relative to the material's own, the shading normal (inertial) and the
+// share of the sky light small hollows let in.
+struct Micro {
+    albedo: f32,
+    normal: vec3<f32>,
+    ao: f32,
 }
 
 // Terrain mirrored by the sea (`terrain_reflection` in `terrain_rq.wgsl`).
@@ -263,6 +279,11 @@ struct Material {
     depth_m: f32,     // water depth
     regolith: bool,
     emission: Spectrum,
+    // How much of each scanned ground material (`terrain/materials.rs`,
+    // slots GM_*) makes up the surface, for its centimetre detail.
+    ground: array<f32, GM_COUNT>,
+    // The share of the ground plants cover (hiding the soil beneath).
+    cover: f32,
 }
 
 // Surface temperature (K) from the equilibrium temperature, the
@@ -312,7 +333,8 @@ fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, b
         veg_w = climate.z * smoothstep(262.0, 272.0, temp) * (1.0 - bare);
         dryness = climate.w;
     }
-    var a = spec_mix(refl_soil(dryness), rock, max(bare, smoothstep(0.4, 0.9, m.y) * dryness));
+    let rocky = max(bare, smoothstep(0.4, 0.9, m.y) * dryness);
+    var a = spec_mix(refl_soil(dryness), rock, rocky);
     a = spec_mix(a, refl_vegetation(dryness), veg_w);
     // Beaches: level ground just above the sea in warm climates is sand,
     // darker where the swash keeps it wet.
@@ -321,6 +343,16 @@ fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, b
     a = spec_mix(a, spec_scale(refl_beach_sand(), 1.0 - 0.45 * wet), beach);
     let snow = smoothstep(271.0, 262.0, temp + 3.0 * (moist - 0.5));
     mat.albedo = spec_mix(a, refl_snow(), snow);
+    // The scanned materials: sand on beaches (wet by the water), rock where
+    // bare, soil elsewhere (under the plants and in the drylands).
+    let bared = 1.0 - snow;
+    mat.ground[GM_SAND] = beach * (1.0 - wet) * bared;
+    mat.ground[GM_WET_SAND] = beach * wet * bared;
+    mat.ground[GM_ROCK] = rocky * (1.0 - beach) * bared;
+    // Plants hide most of the soil (until they're drawn themselves, the
+    // plain green stands in for them).
+    mat.cover = veg_w * (1.0 - beach) * bared;
+    mat.ground[GM_SOIL] = (1.0 - rocky) * (1.0 - beach) * bared * (1.0 - 0.85 * veg_w);
     return mat;
 }
 
@@ -499,13 +531,16 @@ fn planet_surface_radiance(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLi
         }
         return spec_add(spec_add(below, glint), sky);
     }
-    let f = select(brdf_oren_nayar(h.normal, view, sun.dir), brdf_regolith(h.normal, view, sun.dir), mat.regolith);
+    // Centimetre detail of the scanned materials on terrain tiles.
+    let micro = terrain_micro(p, h, mat);
+    let n = micro.normal;
+    let f = select(brdf_oren_nayar(n, view, sun.dir), brdf_regolith(n, view, sun.dir), mat.regolith);
     // The shading normal can face the sun where the true sphere doesn't:
     // no sunlight below the geometric horizon.
-    let nl = max(dot(h.normal, sun.dir), 0.0) * smoothstep(-0.02, 0.02, dot(up, sun.dir));
+    let nl = max(dot(n, sun.dir), 0.0) * smoothstep(-0.02, 0.02, dot(up, sun.dir));
     let direct = spec_scale(e_sun, f * nl);
-    let ambient = spec_scale(e_sky, 1.0 / PI);
-    return spec_fma(mat.albedo, spec_add(direct, ambient), mat.emission);
+    let ambient = spec_scale(e_sky, micro.ao / PI);
+    return spec_fma(spec_scale(mat.albedo, micro.albedo), spec_add(direct, ambient), mat.emission);
 }
 
 // --- Rings --------------------------------------------------------------------

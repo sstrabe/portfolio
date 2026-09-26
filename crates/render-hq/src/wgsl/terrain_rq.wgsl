@@ -16,6 +16,9 @@ struct TerrainView {
     up: vec4<f32>,      // body-fixed unit up at the pilot, planet radius (km)
     anchor: vec4<f32>,  // body-fixed unit direction of the anchor, its distance from the centre (km)
     ids: vec4<u32>,     // planet slot with tiles (0xffffffff: none), unused, unused, unused
+    // Anchored noise varying the ground's brightness over metres to tens
+    // of metres (`terrain::materials::VARIATION_M`, coarse first).
+    variation: array<AnchorOctave, 4>,
 }
 
 @group(1) @binding(4) var<uniform> terrain_view: TerrainView;
@@ -23,6 +26,21 @@ struct TerrainView {
 @group(1) @binding(6) var tile_materials: texture_2d_array<u32>;
 @group(1) @binding(7) var terrain_tlas: acceleration_structure;
 @group(1) @binding(8) var<storage, read> terrain_mesh: array<vec4<f32>>;
+
+// The ground's scanned materials (`terrain/materials.rs`), a layer each:
+// albedo (sRGB rgb, height in alpha) and detail (normal x, y in OpenGL's
+// convention, ambient occlusion, roughness).
+struct GroundMaterials {
+    // Repeat level, relief (m), the albedo's mean luminance, the height's
+    // mean.
+    m: array<vec4<f32>, 8>,
+}
+@group(1) @binding(9) var ground_albedo: texture_2d_array<f32>;
+@group(1) @binding(10) var ground_detail: texture_2d_array<f32>;
+@group(1) @binding(11) var ground_sampler: sampler;
+@group(1) @binding(12) var<uniform> ground_materials: GroundMaterials;
+// The tile in each atlas layer: face, level, x, y.
+@group(1) @binding(13) var<uniform> layer_tiles: array<vec4<u32>, 1024>;
 
 // Must match `terrain/tilegen.rs` and `terrain/rt.rs`.
 const TR_SAMPLES: f32 = 128.0;
@@ -170,7 +188,103 @@ fn tr_tile_surface(p: Planet, hp: ptr<function, SurfaceHit>, layer: u32, prim: u
         nb = -nb;
     }
     h.normal = normalize(planet_inertial(p, nb, h.time));
+    h.layer = layer;
+    h.st = st;
+    h.axis_s = normalize(ts);
+    h.axis_t = normalize(tt);
     *hp = h;
+}
+
+// Where a material's texture is at place `st` of `tile` (face, level, x,
+// y): one repeat spans a tile of `repeat` level on the face grid, so the
+// coordinate is exact and continuous across tiles at any distance.
+fn tr_ground_uv(tile: vec4<u32>, st: vec2<f32>, repeat: u32) -> vec2<f32> {
+    let level = tile.y;
+    if (level >= repeat) {
+        let n = 1u << min(level - repeat, 31u);
+        let within = vec2<u32>(tile.z, tile.w) & vec2<u32>(n - 1u);
+        return (vec2<f32>(within) + st) / f32(n);
+    }
+    // Whole repeats per tile: the tile's index drops out.
+    return st * f32(1u << min(repeat - level, 31u));
+}
+
+// The scanned materials' centimetre detail at a tile hit, blended by the
+// surface's make-up (`Material.ground`) and by height (the higher texel
+// of two materials shows, as rock stands out of sand): brightness, normal
+// and occlusion.
+fn terrain_micro(p: Planet, h: SurfaceHit, mat: Material) -> Micro {
+    var out = Micro(1.0, h.normal, 1.0);
+    if (!h.tiled || h.height < 0.0) {
+        return out;
+    }
+    // Patches of lighter and darker ground over metres to tens of metres,
+    // stronger where plants grow (their clumps and gaps), faded out where
+    // a pixel spans a wavelength.
+    var patches = 0.0;
+    let amp = array<f32, 4>(0.10, 0.08, 0.07, 0.05);
+    for (var k = 0u; k < 4u; k++) {
+        let o = terrain_view.variation[k];
+        let fade = smoothstep(2.0, 4.0, 1.0 / (o.frac_freq.w * max(h.lod, 1e-7)));
+        if (fade > 0.0) {
+            patches += fade * amp[k] * anchored_noise(o, h.local);
+        }
+    }
+    out.albedo = exp((1.0 + 2.5 * mat.cover) * patches);
+    let tile = layer_tiles[h.layer];
+    let radius = terrain_view.up.w;
+    var weight_sum = 0.0;
+    var bright = 0.0;
+    var nts = vec2<f32>(0.0);
+    var ao = 0.0;
+    for (var i = 0u; i < GM_COUNT; i++) {
+        let w = mat.ground[i];
+        if (w < 0.02) {
+            continue;
+        }
+        let gm = ground_materials.m[i];
+        let repeat = u32(gm.x);
+        // One repeat's size, and the mip whose texels match the footprint.
+        let span = radius * 1.5707963 / f32(1u << repeat);
+        if (h.lod > span) {
+            continue;
+        }
+        let lod = log2(max(h.lod * 1024.0 / span, 1.0));
+        let uv = tr_ground_uv(tile, h.st, repeat);
+        let a = textureSampleLevel(ground_albedo, ground_sampler, uv, i, lod);
+        let d = textureSampleLevel(ground_detail, ground_sampler, uv, i, lod);
+        // The scan's large blotches, from a coarse mip (texels an eighth of
+        // a repeat across) are taken out, so its repeats don't show: the
+        // texture gives the small scales and the anchored noise the large.
+        let coarse = max(lod, 7.0);
+        let a_low = textureSampleLevel(ground_albedo, ground_sampler, uv, i, coarse);
+        let d_low = textureSampleLevel(ground_detail, ground_sampler, uv, i, coarse);
+        let wh = w * exp(4.0 * (a.a - a_low.a));
+        let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
+        weight_sum += wh;
+        bright += wh * dot(a.rgb, luma) / max(dot(a_low.rgb, luma), 1e-3);
+        nts += wh * 2.0 * (d.xy - d_low.xy);
+        ao += wh * d.z / max(d_low.z, 0.2);
+    }
+    if (weight_sum <= 0.0) {
+        return out;
+    }
+    // Materials left out (too far to resolve, or slight, or hidden under
+    // plants) keep their share of the plain surface.
+    let total = max(weight_sum, 1e-6);
+    let share = saturate(weight_sum / (weight_sum + max(1.0 - weight_sum, 0.0)));
+    out.albedo *= mix(1.0, clamp(bright / total, 0.0, 2.5), share);
+    out.ao = mix(1.0, ao / total, share);
+    let t = nts / total * share;
+    // Tangent frame: the texture's x along +s, its y (up the image) along
+    // −t, both on the tile's shading normal.
+    let n0 = normalize(planet_body(p, h.normal, h.time));
+    let ax = normalize(h.axis_s - dot(h.axis_s, n0) * n0);
+    let ay = normalize(-h.axis_t + dot(h.axis_t, n0) * n0);
+    let nz = sqrt(max(1.0 - dot(t, t), 0.0));
+    let nb = normalize(t.x * ax + t.y * ay + nz * n0);
+    out.normal = normalize(planet_inertial(p, nb, h.time));
+    return out;
 }
 
 // How much of the sun the terrain hides from a tile hit: a ray towards a

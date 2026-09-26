@@ -22,6 +22,10 @@ fn terrain_reflection(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLight, 
     return out;
 }
 
+fn terrain_micro(p: Planet, h: SurfaceHit, mat: Material) -> Micro {
+    return Micro(1.0, h.normal, 1.0);
+}
+
 fn terrain_surface_hit(p: Planet, o: vec3<f32>, dir: vec3<f32>, u_max: f32, fp: f32, scale: f32) -> SurfaceHit {
     var h: SurfaceHit;
     h.hit = false;
