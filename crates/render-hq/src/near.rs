@@ -382,6 +382,8 @@ impl NearField {
                         min_binding_size: None,
                     },
                 ),
+                // The biome table (`planet.wgsl`).
+                entry(14, uniform()),
             ]
             .into_iter()
             .chain(rt_entries)
@@ -404,6 +406,11 @@ impl NearField {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let terrain = crate::terrain::field::TerrainField::new(device, rt);
+        let biomes = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("biomes"),
+            contents: bytemuck::bytes_of(&crate::terrain::biomes::table()),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
         // The scanned materials are compiled in, so they can only fail to
         // decode if the assets are broken.
         let ground_materials = rt.then(|| {
@@ -422,6 +429,7 @@ impl NearField {
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&maps.climate_view) },
             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&maps.sampler) },
             wgpu::BindGroupEntry { binding: 4, resource: terrain_view.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 14, resource: biomes.as_entire_binding() },
         ];
         if let Some(accel) = &terrain.tile_gen.accel {
             entries.extend([

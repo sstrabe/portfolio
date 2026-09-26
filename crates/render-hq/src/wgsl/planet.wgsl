@@ -295,6 +295,31 @@ fn surface_temperature(tp: TerrainParams, q: vec3<f32>, h: f32) -> f32 {
     return t - 6.5 * max(h, 0.0) * tp.air;
 }
 
+// Biomes of living worlds (`terrain/biomes.rs`): where each is, as soft
+// windows on (temperature K, moisture, height m, steepness, ruggedness,
+// basalt), and what it's made of.
+struct Biome {
+    windows: array<vec4<f32>, 6>,  // lo, hi, soft, unused
+    albedo: Spectrum,
+    ground: array<vec4<f32>, 2>,   // share of each ground material, by slot
+    cover_weight: vec4<f32>,       // plant cover, precedence, unused, unused
+}
+
+struct Biomes {
+    count: vec4<u32>,
+    b: array<Biome, 24>,
+}
+
+@group(1) @binding(14) var<uniform> biomes: Biomes;
+
+// A soft window's weight at x: 1 inside [lo, hi], easing to 0 over `soft`
+// beyond (written so the open ends at ±10⁹ stay defined).
+fn biome_window(w: vec4<f32>, x: f32) -> f32 {
+    let a = saturate((x - (w.x - w.z)) / w.z);
+    let b = saturate((w.y + w.z - x) / w.z);
+    return a * a * (3.0 - 2.0 * a) * b * b * (3.0 - 2.0 * b);
+}
+
 // `flat`: the cosine of the ground's slope (1 level).
 fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, baked: bool, flat: f32) -> Material {
     var mat: Material;
@@ -319,40 +344,45 @@ fn material_ocean_world(tp: TerrainParams, q: vec3<f32>, h: f32, m: vec4<f32>, b
         mat.depth_m = -h * 1000.0;
         return mat;
     }
-    let moist = m.z;
-    let rock = spec_mix(refl_granite(), refl_basalt(), m.w);
-    // Vegetation where it is warm and wet; desert where dry; snow where
-    // cold. Mountains are green below the treeline (the temperature sees to
-    // that): only the cores of the highest ranges are bare, and rock shows
-    // through the thin soils of dry ranges.
-    let bare = smoothstep(0.75, 1.0, m.y);
-    var veg_w = smoothstep(0.1, 0.4, moist) * smoothstep(266.0, 280.0, temp) * (1.0 - bare);
-    var dryness = 1.0 - smoothstep(0.3, 0.7, moist);
+    // The land: the biome table (`terrain/biomes.rs`) weighed at this
+    // point, by temperature, moisture (the climate's where it's baked),
+    // height above the sea (m), steepness, ruggedness and rock type.
+    var moisture = smoothstep(0.1, 0.5, m.z);
     if (baked) {
-        // Vegetation from the climate.
-        veg_w = climate.z * smoothstep(262.0, 272.0, temp) * (1.0 - bare);
-        dryness = climate.w;
+        moisture = climate.z;
     }
-    let rocky = max(bare, smoothstep(0.4, 0.9, m.y) * dryness);
-    var a = spec_mix(refl_soil(dryness), rock, rocky);
-    a = spec_mix(a, refl_vegetation(dryness), veg_w);
-    // Beaches: level ground just above the sea in warm climates is sand,
-    // darker where the swash keeps it wet.
-    let beach = smoothstep(0.004, 0.0015, h) * smoothstep(0.9, 0.97, flat) * smoothstep(275.0, 285.0, temp);
-    let wet = smoothstep(0.0008, 0.0002, h);
-    a = spec_mix(a, spec_scale(refl_beach_sand(), 1.0 - 0.45 * wet), beach);
-    let snow = smoothstep(271.0, 262.0, temp + 3.0 * (moist - 0.5));
-    mat.albedo = spec_mix(a, refl_snow(), snow);
-    // The scanned materials: sand on beaches (wet by the water), rock where
-    // bare, soil elsewhere (under the plants and in the drylands).
-    let bared = 1.0 - snow;
-    mat.ground[GM_SAND] = beach * (1.0 - wet) * bared;
-    mat.ground[GM_WET_SAND] = beach * wet * bared;
-    mat.ground[GM_ROCK] = rocky * (1.0 - beach) * bared;
-    // Plants hide most of the soil (until they're drawn themselves, the
-    // plain green stands in for them).
-    mat.cover = veg_w * (1.0 - beach) * bared;
-    mat.ground[GM_SOIL] = (1.0 - rocky) * (1.0 - beach) * bared * (1.0 - 0.85 * veg_w);
+    var v = array<f32, 6>(temp, moisture, h * 1000.0, 1.0 - flat, m.y, m.w);
+    var total = 0.0;
+    var albedo = spec(0.0);
+    var ground = array<vec4<f32>, 2>(vec4<f32>(0.0), vec4<f32>(0.0));
+    var cover = 0.0;
+    for (var i = 0u; i < biomes.count.x; i++) {
+        var w = biomes.b[i].cover_weight.y;
+        for (var k = 0u; k < 6u; k++) {
+            w *= biome_window(biomes.b[i].windows[k], v[k]);
+        }
+        if (w <= 1e-6) {
+            continue;
+        }
+        total += w;
+        albedo = spec_axpy(biomes.b[i].albedo, w, albedo);
+        ground[0] += w * biomes.b[i].ground[0];
+        ground[1] += w * biomes.b[i].ground[1];
+        cover += w * biomes.b[i].cover_weight.x;
+    }
+    if (total <= 0.0) {
+        // Outside every biome: bare soil.
+        mat.albedo = refl_soil(0.5);
+        return mat;
+    }
+    mat.albedo = spec_scale(albedo, 1.0 / total);
+    mat.cover = cover / total;
+    // Plants hide most of the ground beneath (until they're drawn
+    // themselves, the biome's colour stands in for them).
+    let seen = (1.0 - 0.85 * mat.cover) / total;
+    for (var i = 0u; i < GM_COUNT; i++) {
+        mat.ground[i] = ground[i / 4u][i % 4u] * seen;
+    }
     return mat;
 }
 

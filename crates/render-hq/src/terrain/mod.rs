@@ -7,6 +7,7 @@
 
 pub mod anchor;
 pub mod atlas;
+pub mod biomes;
 pub mod cube;
 pub mod field;
 pub mod ground;
