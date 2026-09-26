@@ -60,6 +60,8 @@ impl Session {
         let ground = self.gpu.near.terrain.ground.snapshot();
         self.world.set_ground(ground.map(|g| Box::new(g) as Box<dyn kerr::world::Ground>));
         self.world.step(wall_dt, input);
+        // Near a planet the chase camera keeps its horizon level.
+        self.gpu.ship.camera.follow(self.world.vertical(), wall_dt);
         self.sync_history();
     }
 

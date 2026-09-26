@@ -305,6 +305,19 @@ pub struct Relative {
     pub gamma: f64,
 }
 
+/// Which way is up near a planet, for a camera that keeps the horizon
+/// level: the planet's rest frame seen from the ship and the ship's
+/// radial direction in it.
+#[derive(Clone, Copy, Debug)]
+pub struct Vertical {
+    pub planet: PlanetRef,
+    /// The planet frame's space axes as ship-frame unit vectors
+    /// (orthonormal).
+    pub axes: [V3; 3],
+    /// Up, away from the planet's centre, in the planet frame.
+    pub up: V3,
+}
+
 /// A body for the orbit autopilot, now.
 struct Parking {
     /// Centre and coordinate velocity.
@@ -1173,6 +1186,23 @@ impl World {
             ship_velocity: ship_velocity(self.normal_observer()),
             gamma: gamma(self.normal_observer()),
         }
+    }
+
+    /// Up near the planet whose gravity dominates (inside its Hill
+    /// sphere), for the camera; `None` elsewhere.
+    pub fn vertical(&self) -> Option<Vertical> {
+        let (t, pos) = (self.pilot.x[0], self.pilot.position());
+        let l = self.local.as_ref().filter(|l| self.cfg.local_gravity && l.reaches(t, pos))?;
+        let BodyRef::Planet(i) = l.dominant(t, pos).0 else { return None };
+        let rel = l.planet_relative(i, self.pilot.x);
+        let e = &self.pilot.e;
+        let ship = |v: V4| -> V3 { std::array::from_fn(|a| self.kerr.dot(pos, e[a + 1], v)) };
+        // Gram–Schmidt: the frames move relative to each other, so the
+        // projections are orthonormal only to ~v².
+        let x = vec3::normalize(ship(rel.frame.e[1]));
+        let y = vec3::normalize(vec3::axpy(ship(rel.frame.e[2]), -vec3::dot(ship(rel.frame.e[2]), x), x));
+        let axes = [x, y, vec3::cross(x, y)];
+        (vec3::norm(rel.pos) > 0.0).then(|| Vertical { planet: l.planet_ref(i), axes, up: vec3::normalize(rel.pos) })
     }
 
     /// Engage the orbit autopilot on the target (else the nearest planet,
@@ -2060,6 +2090,25 @@ mod tests {
         }
         let t = w.telemetry().planet.unwrap();
         assert!((t.altitude_km - 2.0 - LANDED_HEIGHT_KM).abs() < 1e-3, "{t:?}");
+    }
+
+    /// Near a planet, up points away from its centre as the ship sees it:
+    /// a ship looking straight down has up behind it.
+    #[test]
+    fn vertical_points_away_from_the_planet() {
+        let (mut w, p) = planet_world();
+        let (r, _) = circular(&w, p, 500.0);
+        put_near(&mut w, p, r, [0.0; 3]);
+        w.step(1e-3, &Input { autopilot: -1, ..Default::default() });
+        let v = w.vertical().expect("inside the Hill sphere");
+        assert_eq!(v.planet, p);
+        for i in 0..3 {
+            assert!(
+                (vec3::norm(v.axes[i]) - 1.0).abs() < 1e-12 && vec3::dot(v.axes[i], v.axes[(i + 1) % 3]).abs() < 1e-12
+            );
+        }
+        let up: V3 = std::array::from_fn(|m| (0..3).map(|j| v.up[j] * v.axes[j][m]).sum());
+        assert!(vec3::dot(up, [-1.0, 0.0, 0.0]) > 0.9999, "{up:?}");
     }
 
     /// A landed ship settles onto ground that becomes known, at its
