@@ -95,7 +95,7 @@ impl Session {
         self.gpu.write_meta(&built.meta);
         self.gpu.write_spheres(&built.spheres);
         let pixel_angle = built.uniforms.cam[2] as f64;
-        self.gpu.update_near(&self.world, &view, pixel_angle);
+        self.gpu.update_near(&self.world, &view, pixel_angle, self.wall_time);
 
         let sigma = PSF_SIGMA.max(0.6 * pixel_angle);
         let jitter = self.gpu.post.jitter();

@@ -332,7 +332,7 @@ pub fn site_points(sites: &[Candidate], radius_km: f64) -> Vec<V3> {
 
 /// The plants at `sites` whose ground (`hits` of the rays down from
 /// [`site_points`]) suits them: palms 2.5–35 m above the sea, thinning out
-/// inland; grass above the beach (3.5 m) and below the mountains' bare
+/// inland; grass above the beach's sand (4.5 m) and below the mountains' bare
 /// heights (1.5 km). Each is turned its way.
 pub fn plants_from_hits(
     sites: &[Candidate],
@@ -346,7 +346,7 @@ pub fn plants_from_hits(
             let ground_km = 0.5 - hit.as_ref()?.t_km as f64;
             let h_m = ground_km * 1000.0;
             let fits = if c.grass {
-                (3.5..1500.0).contains(&h_m)
+                (4.5..1500.0).contains(&h_m)
             } else {
                 (2.5..35.0).contains(&h_m) && c.keep <= 0.9 * (1.0 - ((h_m - 8.0) / 27.0).clamp(0.0, 1.0))
             };

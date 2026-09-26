@@ -460,7 +460,9 @@ impl Gpu {
     }
 
     /// Pick the near field for this frame (before building `HqUniforms`).
-    pub fn update_near(&mut self, world: &World, view: &kerr::pilot::Tetrad, pixel_angle: f64) {
+    /// `wall_time` (s) sways the plants.
+    pub fn update_near(&mut self, world: &World, view: &kerr::pilot::Tetrad, pixel_angle: f64, wall_time: f64) {
+        self.near.terrain.time_s = wall_time;
         // The chase camera's offset from the pilot, in the view axes (km).
         let pose = self.ship.camera.pose();
         self.near.set_camera(pose.axes.map(|a| kerr::vec3::dot(pose.pos, a) * 1e-3));

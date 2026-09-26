@@ -58,6 +58,8 @@ pub struct TerrainField {
     placing: Option<(Vec<super::plants::Candidate>, super::rt::PendingCast)>,
     /// Frames since plants were last placed.
     plant_age: u32,
+    /// Wall-clock time (s) for the plants' sway; set before `update`.
+    pub time_s: f64,
 }
 
 /// Plants are placed again when the eye has moved this far (km; the
@@ -79,6 +81,7 @@ impl TerrainField {
             plants_at: None,
             placing: None,
             plant_age: 0,
+            time_s: 0.0,
         }
     }
 
@@ -176,7 +179,7 @@ impl TerrainField {
             }
             let mut enc =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("terrain tlas") });
-            accel.build_tlas(&mut enc, (&self.drawn, &self.plants), r, anchor.origin_km);
+            accel.build_tlas(&mut enc, (&self.drawn, &self.plants, self.time_s), r, anchor.origin_km);
             queue.submit([enc.finish()]);
         }
         self.stats = FieldStats {

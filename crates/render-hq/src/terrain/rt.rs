@@ -56,6 +56,23 @@ pub struct PlantInstance {
     pub lean: V3,
 }
 
+impl PlantInstance {
+    /// Its axes (lean, side, up) at wall time `t` (s), swaying in the
+    /// trade wind (from the east): about the horizontal square to the wind,
+    /// palms ~0.7° at 0.25 Hz, grass ~4° at 0.7 Hz, each in its own phase.
+    pub fn axes(&self, t: f64) -> [V3; 3] {
+        let grass = self.variant >= PALM_VARIANTS;
+        let (amp, freq) = if grass { (0.07, 0.7) } else { (0.012, 0.25) };
+        let phase = (vec3::dot(self.foot_km, [12.9898, 78.233, 37.719]) * 43.758).fract() * std::f64::consts::TAU;
+        let gust = 1.0 + 0.5 * (0.13 * t + phase).sin();
+        let angle = amp * gust * (std::f64::consts::TAU * freq * t + phase).sin();
+        let east = vec3::cross([0.0, 0.0, 1.0], self.up);
+        let axis = if vec3::norm(east) > 1e-9 { vec3::normalize(vec3::cross(self.up, east)) } else { self.lean };
+        let (x, z) = (vec3::rotate(self.lean, axis, angle), vec3::rotate(self.up, axis, angle));
+        [x, vec3::cross(z, x), z]
+    }
+}
+
 /// The plants' meshes on the GPU.
 pub struct PlantGeometry {
     vertices: wgpu::Buffer,
@@ -327,7 +344,7 @@ impl TerrainAccel {
     pub fn build_tlas(
         &mut self,
         enc: &mut wgpu::CommandEncoder,
-        (drawn, plants): (&[(TileId, u32)], &[PlantInstance]),
+        (drawn, plants, time_s): (&[(TileId, u32)], &[PlantInstance], f64),
         radius_km: f64,
         anchor_km: V3,
     ) {
@@ -356,8 +373,7 @@ impl TerrainAccel {
         // leans their way and z is up.
         let g = &self.plants;
         for p in plants.iter().take(MAX_PLANTS as usize) {
-            let (x, z) = (p.lean, p.up);
-            let y = vec3::cross(z, x);
+            let [x, y, z] = p.axes(time_s);
             let at = vec3::sub(p.foot_km, anchor_km);
             let s = 1e-3;
             let transform = std::array::from_fn(|k| {
