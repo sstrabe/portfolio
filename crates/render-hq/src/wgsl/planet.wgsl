@@ -611,12 +611,21 @@ fn planet_surface_radiance(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLi
         // the sky and sun mirrored by the waves.
         let e_in = spec_add(spec_scale(e_sun, mu0 * (1.0 - f_sun)), spec_scale(e_sky, 0.94));
         let below = spec_scale(spec_mul(water_reflectance(mat.depth_m), e_in), 0.54 / PI);
-        let wind = p.detail.x;
-        let glint = spec_scale(e_sun, ocean_glint(up, view, sun.dir, wind));
-        // The sky mirrored, or the land where a reflection ray meets it.
-        let fr = fresnel_water(max(dot(up, view), 0.0));
-        var sky = spec_scale(e_sky, fr / PI);
-        let land = terrain_reflection(p, h, view, sun, wind);
+        // Waves resolved near the eye tilt the surface; the glint's
+        // statistics keep the slopes too small to see.
+        let waves = terrain_sea_normal(p, h);
+        let nw = waves.xyz;
+        let wind = p.detail.x * (1.0 - 0.6 * waves.w);
+        let glint = spec_scale(e_sun, ocean_glint(nw, view, sun.dir, wind));
+        // The sky mirrored (brighter towards the horizon, so the waves show
+        // as lighter and darker streaks), or the land where a reflection
+        // ray meets it.
+        let fr = fresnel_water(max(dot(nw, view), 0.0));
+        let rz = max(dot(reflect(-view, nw), up), 0.0);
+        var sky = spec_scale(e_sky, fr / PI * (0.75 + 0.9 * pow(1.0 - rz, 4.0)));
+        var hw = h;
+        hw.normal = nw;
+        let land = terrain_reflection(p, hw, view, sun, wind);
         if (land.hit) {
             sky = spec_scale(land.L, fr);
         }

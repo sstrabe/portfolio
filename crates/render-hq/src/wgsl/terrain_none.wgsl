@@ -22,6 +22,10 @@ fn terrain_reflection(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLight, 
     return out;
 }
 
+fn terrain_sea_normal(p: Planet, h: SurfaceHit) -> vec4<f32> {
+    return vec4<f32>(h.normal, 0.0);
+}
+
 fn terrain_surf_noise(h: SurfaceHit) -> f32 {
     return 0.0;
 }

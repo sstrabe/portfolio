@@ -203,6 +203,45 @@ fn tr_tile_surface(p: Planet, hp: ptr<function, SurfaceHit>, layer: u32, prim: u
     *hp = h;
 }
 
+// The sea's waves near the eye: a normal (inertial) from anchored noise
+// at 3.5 m and 1 m that drifts with the wind and evolves in place (moving
+// the sample through the lattice's third dimension), faded out where a
+// pixel spans a wave (the glint's statistics take over there); and the
+// share of the waves' slopes resolved (w, 0–1).
+fn terrain_sea_normal(p: Planet, h: SurfaceHit) -> vec4<f32> {
+    let flat = vec4<f32>(h.normal, 0.0);
+    if (!h.tiled || h.lod > 0.002) {
+        return flat;
+    }
+    let up = h.body;
+    let t = hq.view.z;
+    let east = normalize(cross(vec3<f32>(0.0, 0.0, 1.0), up) + vec3<f32>(1e-6, 0.0, 0.0));
+    let north = cross(up, east);
+    // Drift with the trade wind (from the east), 0.8 m/s, and evolve at
+    // 0.25 m/s through the lattice.
+    let moved = h.local + (-0.0008 * east + 0.00025 * up) * t;
+    var grad = vec2<f32>(0.0);
+    var resolved = 0.0;
+    let amp = array<f32, 2>(0.09, 0.06);
+    for (var k = 0u; k < 2u; k++) {
+        let o = terrain_view.variation[2u + k];
+        let lambda = 1.0 / o.frac_freq.w;
+        let fade = smoothstep(2.0, 4.0, lambda / max(h.lod, 1e-7));
+        if (fade <= 0.0) {
+            continue;
+        }
+        let e = 0.125 * lambda;
+        let n0 = anchored_noise(o, moved);
+        let ne = anchored_noise(o, moved + e * east);
+        let nn = anchored_noise(o, moved + e * north);
+        // Slopes of amp·λ-high waves: amp times the noise's slope per cell.
+        grad += fade * amp[k] * vec2<f32>(ne - n0, nn - n0) / 0.125;
+        resolved = max(resolved, fade);
+    }
+    let nb = normalize(up - grad.x * east - grad.y * north);
+    return vec4<f32>(normalize(planet_inertial(p, nb, h.time)), resolved);
+}
+
 // Anchored noise (−1 to 1) that breaks up the surf's foam, over metres
 // (0 off the tiles).
 fn terrain_surf_noise(h: SurfaceHit) -> f32 {
@@ -375,9 +414,11 @@ fn terrain_reflection(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLight, 
     // Gaussian slopes (Box–Muller), variance σ²/2 per axis.
     let sigma = sqrt(0.5 * (0.003 + 5.12e-3 * max(wind, 0.5)));
     let g = sqrt(-2.0 * log(r1)) * vec2<f32>(cos(6.2831853 * r2), sin(6.2831853 * r2)) * sigma;
-    let t1 = normalize(cross(up, select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(up.z) > 0.9)));
-    let t2 = cross(up, t1);
-    let n = normalize(up - g.x * t1 - g.y * t2);
+    // Facets about the resolved waves' normal (`terrain_sea_normal`).
+    let n0 = normalize(planet_body(p, h.normal, h.time));
+    let t1 = normalize(cross(n0, select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(n0.z) > 0.9)));
+    let t2 = cross(n0, t1);
+    let n = normalize(n0 - g.x * t1 - g.y * t2);
     var r = reflect(-v, n);
     if (dot(r, up) <= 1e-3) {
         r = reflect(-v, up);
