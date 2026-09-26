@@ -12,6 +12,8 @@ shaders = { path = "../shaders" }
 bytemuck = { version = "1.25", features = ["derive"] }
 font8x8 = "0.3"
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "metal", "dx12"] }
+zune-jpeg = "0.5.15"
+zune-core = "0.5"
 
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
