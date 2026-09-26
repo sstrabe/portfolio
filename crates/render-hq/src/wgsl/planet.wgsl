@@ -659,7 +659,11 @@ fn planet_surface_radiance(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLi
     // The shading normal can face the sun where the true sphere doesn't:
     // no sunlight below the geometric horizon.
     let nl = max(dot(n, sun.dir), 0.0) * smoothstep(-0.02, 0.02, dot(up, sun.dir));
-    let direct = spec_scale(e_sun, f * nl);
+    var direct = spec_scale(e_sun, f * nl);
+    // Leaves let sunlight through from behind (about as they reflect it).
+    if (h.plant >= 2u) {
+        direct = spec_add(direct, spec_scale(e_sun, 0.8 * max(-dot(n, sun.dir), 0.0) / PI));
+    }
     let ambient = spec_scale(e_sky, micro.ao / PI);
     let ground = spec_fma(spec_scale(mat.albedo, micro.albedo), spec_add(direct, ambient), mat.emission);
     // On sand the sea reaches: the swash's film of water running up and

@@ -390,8 +390,15 @@ fn terrain_shadow(p: Planet, h: SurfaceHit, sun: SunLight) -> f32 {
     let a = sun.angular_radius * sqrt(r1);
     let phi = 6.2831853 * r2;
     let d = normalize(s + a * (cos(phi) * t1 + sin(phi) * t2));
-    // Off the surface by a little, more for distant hits (f32 positions).
-    let o = h.local + up * (1e-5 + 1e-4 * h.u);
+    // Off the surface by a little, more for distant hits (f32 positions);
+    // off a plant's sunward side (a leaf lit from behind mustn't shade
+    // itself).
+    var off = up;
+    if (h.plant != 0u) {
+        let nb = normalize(planet_body(p, h.normal, h.time));
+        off = select(-nb, nb, dot(nb, s) > 0.0);
+    }
+    let o = h.local + off * (1e-5 + 1e-4 * h.u);
     var rq: ray_query;
     rayQueryInitialize(&rq, terrain_tlas, RayDesc(RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_TERMINATE_ON_FIRST_HIT, 0xffu, 0.0, 100.0, o, d));
     rayQueryProceed(&rq);
