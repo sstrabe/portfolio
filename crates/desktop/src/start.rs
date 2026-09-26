@@ -374,6 +374,10 @@ fn on_ground(world: &mut World, g: GroundStart, gpu: &Gpu) -> Result<String, Str
     }
     // Stay at eye height as the terrain tiles' ground becomes known.
     world.clearance_km = g.height_m / 1000.0;
+    // At standing height, on foot with the ship parked behind.
+    if g.height_m < 3.0 {
+        world.stand_with_ship_behind(25.0);
+    }
     world.cfg.time_scale = 1.0 / SECONDS_PER_M;
     let sun_elevation = vec3::dot(to_star, up).asin().to_degrees();
     let what = match (ground.fill, ground.solid_km < 0.0) {
@@ -926,7 +930,7 @@ mod tests {
         let eye = vec3::scale(site, planet.radius_km + ground + 0.0017);
         let mut field = TerrainField::new(&gpu.device, true);
         for _ in 0..120 {
-            field.update(&gpu.device, &gpu.queue, ((0, 0, i), planet), (eye, eye), 1e-3, None);
+            field.update(&gpu.device, &gpu.queue, ((0, 0, i), planet), (eye, &[]), 1e-3, None);
         }
         let s = field.stats;
         println!("{} tiles drawn, finest level {}, {} standing in", field.drawn.len(), s.finest, s.standing_in);
@@ -960,7 +964,7 @@ mod tests {
         // The CPU's ground (read back, on the traced triangles) agrees with
         // rays cast straight down on the GPU, around the eye.
         for _ in 0..10 {
-            field.update(&gpu.device, &gpu.queue, ((0, 0, i), planet), (eye, eye), 1e-3, None);
+            field.update(&gpu.device, &gpu.queue, ((0, 0, i), planet), (eye, &[]), 1e-3, None);
         }
         let anchor = field.anchor_km().unwrap();
         let accel = field.tile_gen.accel.as_ref().unwrap();

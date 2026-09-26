@@ -172,6 +172,8 @@ pub struct Input {
     /// Station index to fly to, or `-1`.
     pub autopilot: i32,
     pub undock: bool,
+    /// On foot: jump.
+    pub jump: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -407,11 +409,37 @@ pub struct World {
     /// On foot (landed): movement input walks along the ground instead of
     /// lifting off.
     pub on_foot: bool,
+    /// The ship, left on the ground while its pilot walks.
+    pub parked: Option<Parked>,
+    /// On foot: height (m) of a jump above the ground and its rate (m/s).
+    jump: (f64, f64),
+}
+
+/// A ship left standing on a planet (see [`World::step_out`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Parked {
+    pub planet: PlanetRef,
+    /// Where it stands: the offset from the centre in the planet's rotating
+    /// frame (as [`PilotStatus::Landed`]), and its axes (forward, left, up)
+    /// in that frame.
+    pub offset: V3,
+    pub axes: [V3; 3],
 }
 
 /// Walking and running pace on foot, m/s.
 const WALK_SPEED_M_S: f64 = 1.4;
 const RUN_SPEED_M_S: f64 = 4.0;
+/// Eye height of someone standing, km.
+pub const EYE_HEIGHT_KM: f64 = 0.0017;
+/// How near the ship (m) its pilot has to be to board it.
+pub const BOARD_RANGE_M: f64 = 40.0;
+/// Where the pilot stands on stepping out: this far (m) to the ship's
+/// left, facing it.
+const STEP_OUT_M: f64 = 25.0;
+/// Take-off speed of a jump, m/s (≈ 0.45 m high in Earth's gravity).
+const JUMP_SPEED_M_S: f64 = 3.0;
+/// The steepest slope that can be walked up (rise over run, ≈ 39°).
+const MAX_SLOPE: f64 = 0.8;
 
 pub const STATION_TEMPERATURE: f64 = 6500.0;
 
@@ -486,6 +514,8 @@ impl World {
             ground: None,
             clearance_km: LANDED_HEIGHT_KM,
             on_foot: false,
+            parked: None,
+            jump: (0.0, 0.0),
             cfg,
         }
     }
@@ -1591,7 +1621,142 @@ impl World {
         }
         let pace = if input.boost { RUN_SPEED_M_S } else { WALK_SPEED_M_S };
         let step = pace * wall_dt * len.min(1.0) / len / 1000.0 / KM_PER_M;
-        Some(vec3::scale(vec3::normalize(vec3::axpy(offset, step, dir)), vec3::norm(offset)))
+        let to = vec3::scale(vec3::normalize(vec3::axpy(offset, step, dir)), vec3::norm(offset));
+        // Too steep to walk up: stay.
+        if let (Some(h0), Some(h1)) = (self.surface_height_km(p, q), self.surface_height_km(p, vec3::normalize(to)))
+            && h1 - h0 > MAX_SLOPE * step * len * KM_PER_M
+        {
+            return None;
+        }
+        Some(to)
+    }
+
+    /// The pilot's axes (forward, left, up) in planet `p`'s rotating frame.
+    fn body_axes(&self, p: PlanetRef) -> Option<[V3; 3]> {
+        let l = self.system_of(p)?;
+        let planet = l.planet(p.planet)?;
+        let rel = l.planet_relative(p.planet, self.pilot.x);
+        let angle = planet.rotation(rel.centre[0] * SECONDS_PER_M);
+        let body = |v: V4| vec3::rotate(rel.frame.components(&self.kerr, v).1, planet.spin_axis, -angle);
+        Some([1, 2, 3].map(|i| vec3::normalize(body(self.pilot.e[i]))))
+    }
+
+    /// Turn the pilot to `axes` given in planet `p`'s rotating frame.
+    fn face(&mut self, p: PlanetRef, axes: [V3; 3]) -> Option<()> {
+        let l = self.system_of(p)?;
+        let planet = l.planet(p.planet)?;
+        let rel = l.planet_relative(p.planet, self.pilot.x);
+        let angle = planet.rotation(rel.centre[0] * SECONDS_PER_M);
+        let pos = self.pilot.position();
+        let ship = |b: V3| -> V3 {
+            let d = rel.frame.displacement(0.0, vec3::rotate(b, planet.spin_axis, angle));
+            std::array::from_fn(|a| self.kerr.dot(pos, self.pilot.e[a + 1], d))
+        };
+        let axes = axes.map(ship);
+        self.pilot.set_axes(&self.kerr, axes);
+        Some(())
+    }
+
+    /// Step out of the landed ship: it's parked where it stands and the
+    /// pilot stands on the ground beside it (to its left), facing it, level
+    /// with the horizon. False unless landed and aboard.
+    pub fn step_out(&mut self) -> bool {
+        let PilotStatus::Landed { planet: p, offset } = self.status else { return false };
+        if self.on_foot {
+            return false;
+        }
+        let Some(axes) = self.body_axes(p) else { return false };
+        let up = vec3::normalize(offset);
+        let flat = |v: V3| vec3::axpy(v, -vec3::dot(v, up), up);
+        // Its left flattened onto the ground (its top, if it stands on its
+        // side).
+        let left = if vec3::norm(flat(axes[1])) > 0.3 { flat(axes[1]) } else { flat(axes[2]) };
+        let left = vec3::normalize(left);
+        let step = STEP_OUT_M / 1000.0 / KM_PER_M;
+        let at = vec3::scale(vec3::normalize(vec3::axpy(offset, step, left)), vec3::norm(offset));
+        if !self.land(p, at) {
+            return false;
+        }
+        // Level where the pilot stands (up there is 25 m of arc from the
+        // ship's).
+        let up = vec3::normalize(at);
+        let forward = vec3::normalize(vec3::axpy(vec3::scale(left, -1.0), vec3::dot(left, up), up));
+        self.face(p, [forward, vec3::cross(up, forward), up]);
+        self.parked = Some(Parked { planet: p, offset, axes });
+        self.on_foot = true;
+        self.clearance_km = EYE_HEIGHT_KM;
+        self.jump = (0.0, 0.0);
+        true
+    }
+
+    /// Stand on foot where the pilot is (landed) with the ship parked
+    /// `behind_m` behind, level and facing the same way: for starts on the
+    /// ground. False unless landed.
+    pub fn stand_with_ship_behind(&mut self, behind_m: f64) -> bool {
+        let PilotStatus::Landed { planet: p, offset } = self.status else { return false };
+        let Some([f, l, _]) = self.body_axes(p) else { return false };
+        let flat = |v: V3, up: V3| vec3::axpy(v, -vec3::dot(v, up), up);
+        let up = vec3::normalize(offset);
+        let ahead = if vec3::norm(flat(f, up)) > 0.3 { flat(f, up) } else { vec3::cross(l, up) };
+        let ahead = vec3::normalize(ahead);
+        let r = vec3::norm(offset) + (LANDED_HEIGHT_KM - self.clearance_km) / KM_PER_M;
+        let at = vec3::scale(vec3::normalize(vec3::axpy(offset, -behind_m / 1000.0 / KM_PER_M, ahead)), r);
+        let up = vec3::normalize(at);
+        let forward = vec3::normalize(flat(ahead, up));
+        self.parked = Some(Parked { planet: p, offset: at, axes: [forward, vec3::cross(up, forward), up] });
+        self.on_foot = true;
+        self.jump = (0.0, 0.0);
+        true
+    }
+
+    /// Board the parked ship, if on foot within [`BOARD_RANGE_M`] of it:
+    /// the pilot is back aboard it as it was left.
+    pub fn board(&mut self) -> bool {
+        let (Some(park), PilotStatus::Landed { planet, offset }) = (self.parked, self.status) else { return false };
+        let far_m = vec3::norm(vec3::sub(offset, park.offset)) * KM_PER_M * 1000.0;
+        if !self.on_foot || planet != park.planet || far_m > BOARD_RANGE_M || !self.land(planet, park.offset) {
+            return false;
+        }
+        self.face(planet, park.axes);
+        self.parked = None;
+        self.on_foot = false;
+        self.clearance_km = LANDED_HEIGHT_KM;
+        true
+    }
+
+    /// On foot, turn the head (rad): yaw about the local vertical (positive
+    /// turns left), pitch about the pilot's left (positive looks down),
+    /// stopping short of straight up or down so the horizon stays level.
+    pub fn look(&mut self, d_yaw: f64, d_pitch: f64) {
+        let PilotStatus::Landed { planet: p, offset } = self.status else { return };
+        if !self.on_foot {
+            return;
+        }
+        let Some([f, l, _]) = self.body_axes(p) else { return };
+        let up = vec3::normalize(offset);
+        // Level: left horizontal, then the pitch of forward above it.
+        let l = vec3::normalize(vec3::axpy(l, -vec3::dot(l, up), up));
+        let h = vec3::cross(l, up);
+        let pitch = vec3::dot(f, up).atan2(vec3::dot(f, h));
+        let pitch = (pitch - d_pitch).clamp(-1.5, 1.5);
+        let (h, l) = (vec3::rotate(h, up, d_yaw), vec3::rotate(l, up, d_yaw));
+        let (s, c) = pitch.sin_cos();
+        let f = vec3::add(vec3::scale(h, c), vec3::scale(up, s));
+        self.face(p, [f, l, vec3::cross(f, l)]);
+    }
+
+    /// On foot near the parked ship: where the pilot's eye is (m) in the
+    /// ship's axes, and the pilot's axes in them, for drawing the ship.
+    pub fn parked_view(&self) -> Option<(V3, [V3; 3])> {
+        let park = self.parked.filter(|_| self.on_foot)?;
+        let PilotStatus::Landed { planet, offset } = self.status else { return None };
+        if planet != park.planet {
+            return None;
+        }
+        let axes = self.body_axes(planet)?;
+        let d = vec3::scale(vec3::sub(offset, park.offset), KM_PER_M * 1000.0);
+        let in_ship = |v: V3| park.axes.map(|a| vec3::dot(a, v));
+        Some((in_ship(d), axes.map(in_ship)))
     }
 
     /// Ride on a planet's surface for `dtau`, turning with it.
@@ -1600,12 +1765,33 @@ impl World {
             self.status = PilotStatus::Free;
             return self.fly(input, wall_dt, dtau);
         };
-        // On foot, walk; then rest on the ground where it's known,
-        // `clearance_km` above it.
+        // On foot, walk and jump; then rest on the ground where it's known,
+        // `clearance_km` above it (plus the jump).
         let offset = if self.on_foot { self.walk(p, offset, wall_dt, input).unwrap_or(offset) } else { offset };
+        if self.on_foot {
+            let (mut z, mut vz) = self.jump;
+            if input.jump && z == 0.0 {
+                vz = JUMP_SPEED_M_S;
+            }
+            let g = self
+                .system_of(p)
+                .and_then(|l| l.planet(p.planet))
+                .map_or(9.8, |pl| pl.gm() / (pl.radius_km * pl.radius_km) * 1e3);
+            vz -= g * wall_dt;
+            z += vz * wall_dt;
+            self.jump = if z > 0.0 { (z, vz) } else { (0.0, 0.0) };
+        }
+        // The parked ship stands on the ground too, once it's known there.
+        if let Some(park) = self.parked.as_mut().filter(|k| k.planet == p) {
+            let q = vec3::normalize(park.offset);
+            if let Some(h) = self.ground.as_ref().filter(|g| g.planet() == p).and_then(|g| g.height_km(q)) {
+                park.offset = vec3::scale(q, radius + (h.max(0.0) + LANDED_HEIGHT_KM) / KM_PER_M);
+            }
+        }
         let q = vec3::normalize(offset);
+        let lift_km = if self.on_foot { self.jump.0 / 1000.0 } else { 0.0 };
         let offset = match self.surface_height_km(p, q) {
-            Some(h) => vec3::scale(q, radius + (h + self.clearance_km) / KM_PER_M),
+            Some(h) => vec3::scale(q, radius + (h + self.clearance_km + lift_km) / KM_PER_M),
             None => offset,
         };
         self.status = PilotStatus::Landed { planet: p, offset };
@@ -2092,6 +2278,159 @@ mod tests {
         }
         fn height_km(&self, _q: V3) -> Option<f64> {
             Some(self.height_km)
+        }
+    }
+
+    /// Ground rising along `dir` (body-fixed) at `slope` (rise over run)
+    /// from `height_km` at `from`.
+    struct Ramp {
+        planet: PlanetRef,
+        height_km: f64,
+        from: V3,
+        dir: V3,
+        slope: f64,
+        radius_km: f64,
+    }
+
+    impl Ground for Ramp {
+        fn planet(&self) -> PlanetRef {
+            self.planet
+        }
+        fn height_km(&self, q: V3) -> Option<f64> {
+            Some(self.height_km + self.slope * self.radius_km * vec3::dot(vec3::sub(q, self.from), self.dir))
+        }
+    }
+
+    /// A ship landed on flat ground at 200 m, with time running at 1:1.
+    fn landed_world() -> (World, PlanetRef) {
+        let (mut w, p) = planet_world();
+        let (r, _) = circular(&w, p, 2000.0);
+        put_near(&mut w, p, r, [0.0; 3]);
+        w.cfg.time_scale = 1e9;
+        let input = Input { autopilot: -1, ..Default::default() };
+        assert!((0..60 * 60).any(|_| {
+            w.step(1.0 / 60.0, &input);
+            matches!(w.status, PilotStatus::Landed { .. })
+        }));
+        w.set_ground(Some(Box::new(FlatGround { planet: p, height_km: 0.2 })));
+        w.cfg.time_scale = 1.0 / SECONDS_PER_M;
+        w.step(1.0 / 60.0, &input);
+        (w, p)
+    }
+
+    fn landed_offset(w: &World) -> V3 {
+        let PilotStatus::Landed { offset, .. } = w.status else { panic!("{:?}", w.status) };
+        offset
+    }
+
+    /// Stepping out parks the ship and stands the pilot beside it at eye
+    /// height, facing it; boarding works only near it and puts the pilot
+    /// back aboard as it was.
+    #[test]
+    fn step_out_and_board() {
+        let (mut w, p) = landed_world();
+        let still = Input { autopilot: -1, ..Default::default() };
+        let ship_at = landed_offset(&w);
+        let ship_axes = w.body_axes(p).unwrap();
+        assert!(w.step_out() && !w.step_out());
+        for _ in 0..10 {
+            w.step(1.0 / 60.0, &still);
+        }
+        let t = w.telemetry().planet.unwrap();
+        assert!(t.landed && (t.altitude_km - 0.2017).abs() < 1e-4, "{t:?}");
+        // The ship landed nose down: the pilot is 25 m to its left and
+        // 8.3 m below its centre (along its forward), looking at it.
+        let (eye, axes) = w.parked_view().unwrap();
+        assert!((eye[1] - STEP_OUT_M).abs() < 0.05 && (eye[0] - 8.3).abs() < 0.05, "{eye:?}");
+        assert!(vec3::norm(vec3::sub(axes[0], [0.0, -1.0, 0.0])) < 1e-3, "{axes:?}");
+        // Backing off 16.8 m is out of range; walking back 7 m is in it.
+        let walk = |w: &mut World, x: f64, s: f64| {
+            let input = Input { thrust: [x, 0.0, 0.0], autopilot: -1, ..Default::default() };
+            for _ in 0..(s * 60.0) as usize {
+                w.step(1.0 / 60.0, &input);
+            }
+        };
+        walk(&mut w, -1.0, 12.0);
+        assert!(!w.board());
+        walk(&mut w, 1.0, 5.0);
+        assert!(w.board());
+        w.step(1.0 / 60.0, &still);
+        assert!(!w.on_foot && w.parked.is_none());
+        assert!(vec3::norm(vec3::sub(landed_offset(&w), ship_at)) * KM_PER_M < 1e-9);
+        let axes = w.body_axes(p).unwrap();
+        for (a, b) in axes.iter().zip(&ship_axes) {
+            assert!(vec3::norm(vec3::sub(*a, *b)) < 1e-6, "{axes:?} {ship_axes:?}");
+        }
+        let t = w.telemetry().planet.unwrap();
+        assert!((t.altitude_km - 0.21).abs() < 1e-4, "{t:?}");
+    }
+
+    /// A ground start stands the pilot on foot with the ship parked behind,
+    /// which settles on the ground.
+    #[test]
+    fn standing_with_the_ship_behind() {
+        let (mut w, _) = landed_world();
+        w.clearance_km = EYE_HEIGHT_KM;
+        w.step(1.0 / 60.0, &Input { autopilot: -1, ..Default::default() });
+        assert!(w.stand_with_ship_behind(25.0));
+        w.set_ground(Some(Box::new(FlatGround { planet: w.parked.unwrap().planet, height_km: 0.3 })));
+        for _ in 0..5 {
+            w.step(1.0 / 60.0, &Input { autopilot: -1, ..Default::default() });
+        }
+        // The pilot is 25 m ahead of the ship and 8.3 m below its centre.
+        let (eye, _) = w.parked_view().unwrap();
+        assert!((eye[0] - 25.0).abs() < 0.05 && (eye[2] + 8.3).abs() < 0.05 && eye[1].abs() < 0.05, "{eye:?}");
+        assert!(w.board());
+    }
+
+    /// The head turns level with the horizon and stops short of straight
+    /// down; a jump goes up and comes back down.
+    #[test]
+    fn looking_and_jumping() {
+        let (mut w, p) = landed_world();
+        assert!(w.step_out());
+        let up = vec3::normalize(landed_offset(&w));
+        w.look(0.5, 0.3);
+        let [f, l, _] = w.body_axes(p).unwrap();
+        assert!(vec3::dot(l, up).abs() < 1e-9 && (vec3::dot(f, up) + 0.3f64.sin()).abs() < 1e-9);
+        w.look(0.0, 10.0);
+        assert!((vec3::dot(w.body_axes(p).unwrap()[0], up) + 1.5f64.sin()).abs() < 1e-9);
+        let still = Input { autopilot: -1, ..Default::default() };
+        w.step(1.0 / 60.0, &still);
+        let ground = w.telemetry().planet.unwrap().altitude_km;
+        w.step(1.0 / 60.0, &Input { jump: true, ..still });
+        let mut top: f64 = 0.0;
+        for _ in 0..120 {
+            w.step(1.0 / 60.0, &still);
+            top = top.max(w.telemetry().planet.unwrap().altitude_km - ground);
+        }
+        assert!(top > 0.2e-3 && top < 2e-3, "{top}");
+        // Back on the ground (telemetry resolves a few cm).
+        assert!((w.telemetry().planet.unwrap().altitude_km - ground).abs() < 1e-4);
+    }
+
+    /// Slopes up to about 39° can be walked up; steeper ones stop the
+    /// pilot.
+    #[test]
+    fn too_steep_to_walk_up() {
+        for (slope, walks) in [(0.3, true), (2.0, false)] {
+            let (mut w, p) = landed_world();
+            assert!(w.step_out());
+            let still = Input { autopilot: -1, ..Default::default() };
+            for _ in 0..5 {
+                w.step(1.0 / 60.0, &still);
+            }
+            let start = landed_offset(&w);
+            let dir = w.body_axes(p).unwrap()[0];
+            let radius_km = vec3::norm(start) * KM_PER_M;
+            let from = vec3::normalize(start);
+            w.set_ground(Some(Box::new(Ramp { planet: p, height_km: 0.2, from, dir, slope, radius_km })));
+            let input = Input { thrust: [1.0, 0.0, 0.0], autopilot: -1, ..Default::default() };
+            for _ in 0..60 {
+                w.step(1.0 / 60.0, &input);
+            }
+            let moved_m = vec3::norm(vec3::sub(landed_offset(&w), start)) * KM_PER_M * 1000.0;
+            assert_eq!(moved_m > 1.0, walks, "slope {slope}: {moved_m} m");
         }
     }
 

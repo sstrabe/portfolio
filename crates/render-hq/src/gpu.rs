@@ -486,7 +486,7 @@ impl Gpu {
             frame_index: self.frame_index,
             wall_time,
             view,
-            camera: self.ship.camera.pose(),
+            camera: self.ship.view_pose().0,
             terrain: self.near.terrain_pose(),
         };
         self.atmo.update(&ctx);

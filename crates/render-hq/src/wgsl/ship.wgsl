@@ -58,6 +58,8 @@ const MAT_LIGHT: u32 = 7u;
 
 struct ShipHit {
     hit: bool,
+    // Distance to the hull (m).
+    t: f32,
     L: Spectrum,
     // RCS plumes in front of the hull (or the scene): their radiance and
     // transmittance.
@@ -261,6 +263,7 @@ fn ship_plumes(o: vec3<f32>, d: vec3<f32>, t_max: f32) -> Plume {
 fn ship_trace(n: vec3<f32>) -> ShipHit {
     var h: ShipHit;
     h.hit = false;
+    h.t = 1e9;
     h.L = spec(0.0);
     h.plume = spec(0.0);
     h.plume_t = 1.0;
@@ -271,6 +274,7 @@ fn ship_trace(n: vec3<f32>) -> ShipHit {
     let d = normalize(n.x * ship.cam_x.xyz + n.y * ship.cam_y.xyz + n.z * ship.cam_z.xyz);
     let hull = ship_hull(o, d);
     h.hit = hull.hit;
+    h.t = hull.t;
     h.L = hull.L;
     if (ship.rcs.x > 0.5) {
         let plume = ship_plumes(o, d, select(1e9, hull.t, hull.hit));

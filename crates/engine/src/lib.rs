@@ -135,6 +135,7 @@ mod web {
                 brake: get(7) > 0.5,
                 autopilot: input.get(8).map(|v| *v as i32).unwrap_or(-1),
                 undock: get(9) > 0.5,
+                jump: false,
             };
             self.session.frame(wall_dt, &inp);
         }

@@ -29,13 +29,19 @@ pub fn run(o: &Options) -> Result<(), String> {
     s.fov_deg = o.fov;
     s.gpu.post.settings = o.optics;
     s.gpu.ship.camera.chase = o.chase;
-    // `KERR_CHASE_ORBIT=YAW,PITCH` (rad) turns the chase camera from its
-    // default, for reference shots.
-    if let Some([yaw, pitch]) = std::env::var("KERR_CHASE_ORBIT").ok().and_then(|v| {
+    // For reference shots, `KERR_CHASE_ORBIT=YAW,PITCH` (rad) turns the
+    // chase camera from its default, and on foot `KERR_LOOK=YAW,PITCH`
+    // turns the head.
+    let pair = |name: &str| {
+        let v = std::env::var(name).ok()?;
         let a: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
         <[f64; 2]>::try_from(a).ok()
-    }) {
+    };
+    if let Some([yaw, pitch]) = pair("KERR_CHASE_ORBIT") {
         s.gpu.ship.camera.orbit(yaw, pitch);
+    }
+    if let Some([yaw, pitch]) = pair("KERR_LOOK") {
+        s.world.look(yaw, pitch);
     }
     s.gpu.set_render_scale(o.scale.unwrap_or(1.0));
 

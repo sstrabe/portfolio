@@ -54,11 +54,13 @@ fn cs_trace(
     var on_ship = false;
     if (inside) {
         let ship = ship_trace(n);
-        on_ship = ship.hit || ship.plume_t < 0.97;
-        if (ship.hit) {
+        near = near_field(n, frame.cam.z);
+        // The hull, unless terrain is nearer (a ship parked behind a dune,
+        // or a chase camera low on the far side of one).
+        let hull = ship.hit && !(near.depth >= 0.0 && near.depth * 1000.0 < ship.t);
+        on_ship = hull || ship.plume_t < 0.97;
+        if (hull) {
             near = NearResult(Medium(ship.L, spec(0.0)), true, -1.0);
-        } else {
-            near = near_field(n, frame.cam.z);
         }
         // RCS plumes in front of it all.
         near.m = Medium(spec_axpy(near.m.L, ship.plume_t, ship.plume), spec_scale(near.m.T, ship.plume_t));

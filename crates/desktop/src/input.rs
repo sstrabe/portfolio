@@ -9,6 +9,9 @@
 //!   opens it, Ctrl closes it, Z is full and X is cut. `[`/`]` change the
 //!   engine's thrust limit by factors of ten.
 //! * RCS (R) translates: H/N forward/back, J/L left/right, I/K up/down.
+//! * Landed, G steps out and (near the ship) back aboard. On foot W/S walk
+//!   forward and back, A/D sideways, Shift runs, Space jumps, and Q/E or
+//!   dragging with the right button turns the head.
 //!
 //! Ship axes are (forward, left, up); positive pitch is nose down,
 //! positive yaw turns left, positive roll rolls right.
@@ -32,6 +35,8 @@ const SPIN_ACCEL: f64 = 2.0;
 const TURN_RATE: f64 = 1.4;
 /// Map and chase-camera orbiting, rad per pixel dragged.
 pub const DRAG_RAD_PER_PX: f64 = 0.006;
+/// On foot, Q/E turn the head this fast, rad/s.
+const HEAD_TURN_RATE: f64 = 1.5;
 
 /// What SAS does when no rotation key is held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +98,8 @@ pub enum Action {
     MapFocus,
     /// Put the chase camera or the map view back to its default.
     ResetView,
+    /// Step out of the landed ship, or back aboard.
+    StepOut,
     /// A flight-control change worth a note (SAS, RCS, throttle).
     Note(String),
 }
@@ -188,6 +195,7 @@ impl Controls {
             KeyP => Some(Action::NextOptics),
             KeyY => Some(Action::TogglePalette),
             KeyV => Some(Action::ToggleChase),
+            KeyG => Some(Action::StepOut),
             Home => Some(Action::ResetView),
             F1 => Some(Action::ToggleHelp),
             F2 => Some(Action::ToggleHud),
@@ -312,6 +320,27 @@ impl Controls {
     }
 }
 
+impl Controls {
+    /// Input for a frame on foot: W/S walk forward and back, A/D sideways,
+    /// Shift runs, Space jumps. The ship's controls rest.
+    pub fn sample_on_foot(&mut self) -> Input {
+        use KeyCode::*;
+        (self.spin, self.rcs_torque, self.rcs_force) = ([0.0; 3], [0.0; 3], [0.0; 3]);
+        Input {
+            thrust: [self.axis(&[KeyW], &[KeyS]), self.axis(&[KeyA], &[KeyD]), 0.0],
+            boost: self.held(&[ShiftLeft, ShiftRight]),
+            jump: self.held(&[Space]),
+            autopilot: -1,
+            ..Default::default()
+        }
+    }
+
+    /// On foot, how far (rad) Q/E turn the head in `dt` s (positive: left).
+    pub fn head_turn(&self, dt: f64) -> f64 {
+        self.axis(&[KeyCode::KeyQ], &[KeyCode::KeyE]) * HEAD_TURN_RATE * dt
+    }
+}
+
 /// Rate of turn (fractions of the maximum) that brings the nose onto
 /// ship-frame direction `dir` without overshooting: as fast as the ship
 /// can still stop in the angle left, and no roll.
@@ -357,6 +386,22 @@ mod tests {
         assert!(dir[0] > 0.9999, "{dir:?}");
         assert!(vec3::norm(c.spin) < 1e-3);
         assert!(min_forward > 0.5);
+    }
+
+    /// On foot the movement keys walk (and the throttle keys don't touch
+    /// the engine).
+    #[test]
+    fn walking_keys() {
+        let mut c = Controls::default();
+        for k in [KeyCode::KeyW, KeyCode::KeyD, KeyCode::ShiftLeft, KeyCode::Space] {
+            c.key(k, true);
+        }
+        let i = c.sample_on_foot();
+        assert_eq!(i.thrust, [1.0, -1.0, 0.0]);
+        assert!(i.boost && i.jump && i.turn == [0.0; 3]);
+        assert_eq!(c.throttle, 0.0);
+        c.key(KeyCode::KeyQ, true);
+        assert!(c.head_turn(0.1) > 0.0);
     }
 
     #[test]

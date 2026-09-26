@@ -251,6 +251,16 @@ impl Pilot {
         }
     }
 
+    /// Turn to new axes (forward, left, up), given in the current ship
+    /// frame; they're made orthonormal.
+    pub fn set_axes(&mut self, k: &Kerr, axes: [V3; 3]) {
+        let old = [self.e[1], self.e[2], self.e[3]];
+        for (i, a) in axes.iter().enumerate() {
+            self.e[i + 1] = std::array::from_fn(|mu| (0..3).map(|j| a[j] * old[j][mu]).sum());
+        }
+        orthonormalize(k, self.position(), &mut self.e);
+    }
+
     /// Components, in the ship frame (forward, left, up), of a coordinate
     /// displacement `d` taken on the ship's `t = const` slice.
     pub fn local_components(&self, k: &Kerr, d: V3) -> V3 {

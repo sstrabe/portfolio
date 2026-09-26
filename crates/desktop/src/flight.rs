@@ -820,7 +820,7 @@ fn readouts(o: &mut Overlay, world: &World, nav: &Nav, s: f32, ui: f32) {
     }
 }
 
-const HELP: [(&str, &str); 27] = [
+const HELP: [(&str, &str); 29] = [
     ("W / S", "pitch (W: nose down)"),
     ("A / D", "yaw"),
     ("Q / E", "roll"),
@@ -843,6 +843,8 @@ const HELP: [(&str, &str); 27] = [
     ("right drag, wheel", "turn and zoom the camera or map"),
     ("Home", "reset the camera or map"),
     ("V", "chase camera / first person"),
+    ("G", "landed: step out / board the ship"),
+    ("", "on foot: W/S/A/D, Shift, Space, Q/E"),
     ("P / Y", "optics / Hubble palette"),
     ("PgUp PgDn Bksp", "exposure up, down, reset"),
     ("F2", "hide the HUD"),

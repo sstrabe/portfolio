@@ -50,6 +50,8 @@ struct State {
     avg_ms: f64,
     title_at: Instant,
     note: Option<(String, Instant)>,
+    /// The chase camera's state aboard, restored on boarding.
+    chase_aboard: bool,
 }
 
 impl State {
@@ -89,6 +91,7 @@ impl State {
             avg_ms: 16.0,
             title_at: now,
             note: Some(("F1: controls   M: map".into(), now)),
+            chase_aboard: o.chase,
         })
     }
 
@@ -105,12 +108,17 @@ impl State {
         let dt = now.duration_since(self.last).as_secs_f64().min(0.1);
         self.last = now;
 
-        // The mouse turns and zooms the map or the chase camera.
+        // The mouse turns and zooms the map or the chase camera, or on foot
+        // turns the head.
         let drag = self.controls.take_drag();
         let wheel = self.controls.take_wheel();
+        let on_foot = self.session.world.on_foot;
         if self.map.on {
             self.map.orbit(drag);
             self.map.zoom(wheel);
+        } else if on_foot {
+            let yaw = -drag[0] * DRAG_RAD_PER_PX + self.controls.head_turn(dt);
+            self.session.world.look(yaw, drag[1] * DRAG_RAD_PER_PX);
         } else {
             let cam = &mut self.session.gpu.ship.camera;
             cam.orbit(-drag[0] * DRAG_RAD_PER_PX, drag[1] * DRAG_RAD_PER_PX);
@@ -122,7 +130,7 @@ impl State {
         let autopilot =
             matches!(world.status, PilotStatus::Orbit(_) | PilotStatus::HoleOrbit | PilotStatus::Autopilot(_));
         let hold = if self.controls.sas && !autopilot { Nav::new(world).hold(self.controls.sas_mode) } else { None };
-        let input = self.controls.sample(dt, hold);
+        let input = if on_foot { self.controls.sample_on_foot() } else { self.controls.sample(dt, hold) };
         let (torque, force) = self.controls.rcs_command();
         self.session.gpu.ship.set_rcs(torque, force);
         self.session.advance(dt, &input);
@@ -262,10 +270,33 @@ impl State {
                 let note = format!("exposure {:+.0} EV", o.ev);
                 self.notify(note);
             }
+            Action::ToggleChase if self.session.world.on_foot => self.notify("on foot: first person only"),
             Action::ToggleChase => {
                 let cam = &mut self.session.gpu.ship.camera;
                 cam.chase = !cam.chase;
                 let note = if cam.chase { "chase camera (right drag turns it, wheel zooms)" } else { "first person" };
+                self.notify(note);
+            }
+            Action::StepOut => {
+                let world = &mut self.session.world;
+                let cam = &mut self.session.gpu.ship.camera;
+                let note = if world.on_foot {
+                    if world.parked.is_none() {
+                        "no ship to board"
+                    } else if world.board() {
+                        cam.chase = self.chase_aboard;
+                        "aboard"
+                    } else {
+                        "too far from the ship to board (walk within 40 m)"
+                    }
+                } else if world.step_out() {
+                    self.chase_aboard = cam.chase;
+                    cam.chase = false;
+                    self.controls.throttle = 0.0;
+                    "on foot: W/S/A/D walk, Shift runs, Space jumps, Q/E or right drag look, G boards"
+                } else {
+                    "land first to step out"
+                };
                 self.notify(note);
             }
             Action::ToggleMap => {

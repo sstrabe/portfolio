@@ -68,6 +68,10 @@ pub struct Ship {
     bound: (V3, f64),
     /// The camera: first person or chasing the ship.
     pub camera: ChaseCamera,
+    /// On foot beside the parked ship: the pilot's eye (m) and axes in the
+    /// ship's frame (`World::parked_view`), so the ship is drawn where it
+    /// stands.
+    pub parked: Option<camera::Pose>,
     /// Drive power 0–1 for the plasma and radiator glow (set by the session).
     pub power: f64,
     nozzles: Vec<mesh::Nozzle>,
@@ -171,6 +175,7 @@ impl Ship {
             uniform,
             bound: mesh.bounding_sphere(),
             camera: ChaseCamera::default(),
+            parked: None,
             power: 0.0,
             nozzles,
             torques,
@@ -198,12 +203,26 @@ impl Ship {
         &self.bind_group
     }
 
+    /// Where the ship is seen from, in its frame: the camera's pose, taken
+    /// from the pilot to the parked ship when on foot, and whether the ship
+    /// is drawn (the chase camera, or on foot).
+    pub fn view_pose(&self) -> (camera::Pose, bool) {
+        let cam = self.camera.pose();
+        match self.parked {
+            Some(p) => {
+                let pos = vec3::add(p.pos, camera::to_ship(&p.axes, cam.pos));
+                (camera::Pose { pos, axes: cam.axes.map(|a| camera::to_ship(&p.axes, a)) }, true)
+            }
+            None => (cam, self.camera.chase),
+        }
+    }
+
     pub fn update(&mut self, ctx: &FrameContext) {
         let world = ctx.world;
         let pilot = &world.pilot;
-        let pose = self.camera.pose();
+        let (pose, drawn) = self.view_pose();
         let mut u = ShipFrameGpu {
-            cam_pos: f4(pose.pos, if self.camera.chase { 1.0 } else { 0.0 }),
+            cam_pos: f4(pose.pos, if drawn { 1.0 } else { 0.0 }),
             cam_x: f4(pose.axes[0], 0.0),
             cam_y: f4(pose.axes[1], 0.0),
             cam_z: f4(pose.axes[2], 0.0),
@@ -228,14 +247,17 @@ impl Ship {
             }
         }
         u.rcs = [count as f32, 0.0, 0.0, 0.0];
-        if self.camera.chase
-            && let Some(sel) = ctx.near.systems.first()
-        {
+        if drawn && let Some(sel) = ctx.near.systems.first() {
             let sys = &sel.system;
             let pos = pilot.position();
             let star = world.cluster.bodies[sys.star].position();
-            // Ship-frame vectors (km) to the star and to the nearest planet.
-            let local = |p: V3| vec3::scale(pilot.local_components(&world.kerr, vec3::sub(p, pos)), KM_PER_M);
+            // Ship-frame vectors (km) to the star and to the nearest planet
+            // (from the pilot's frame to the parked ship's when on foot).
+            let parked = self.parked;
+            let local = |p: V3| {
+                let v = vec3::scale(pilot.local_components(&world.kerr, vec3::sub(p, pos)), KM_PER_M);
+                parked.map_or(v, |pk| camera::to_ship(&pk.axes, v))
+            };
             let to_star = local(star);
             let d_star = vec3::norm(to_star);
             let sun_dir = vec3::scale(to_star, 1.0 / d_star);

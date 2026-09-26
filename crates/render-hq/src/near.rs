@@ -520,7 +520,13 @@ impl NearField {
         {
             let planet = p.planet(&self.selection).clone();
             let eye = self.eye_body_km(p);
-            self.terrain.update(device, queue, (key, &planet), (eye, p.pilot_body_km()), pixel_angle, profiler);
+            // The ground under the pilot and a parked ship is read back too.
+            let mut around = vec![vec3::normalize(p.pilot_body_km())];
+            if let Some(park) = world.parked.filter(|k| (k.planet.star, k.planet.generation, k.planet.planet) == key) {
+                let axes = crate::terrain::body_axes(planet.spin_axis, 0.0);
+                around.push(crate::terrain::to_body(&axes, vec3::normalize(park.offset)));
+            }
+            self.terrain.update(device, queue, (key, &planet), (eye, &around), pixel_angle, profiler);
             view = self.terrain_view(&planet, eye, p.gpu.ids[3]);
         }
         queue.write_buffer(&self.terrain_view, 0, bytemuck::bytes_of(&view));

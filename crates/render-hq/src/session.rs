@@ -64,6 +64,8 @@ impl Session {
         // out of the ground.
         let world = &self.world;
         self.gpu.ship.camera.follow(world.vertical(), wall_dt, |v, x| world.height_above_ground_m(v, x));
+        // On foot, the ship is drawn where it was left.
+        self.gpu.ship.parked = world.parked_view().map(|(pos, axes)| crate::ship::camera::Pose { pos, axes });
         self.sync_history();
     }
 
