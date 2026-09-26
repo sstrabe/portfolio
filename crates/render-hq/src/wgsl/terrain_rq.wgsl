@@ -41,6 +41,27 @@ struct GroundMaterials {
 @group(1) @binding(12) var<uniform> ground_materials: GroundMaterials;
 // The tile in each atlas layer: face, level, x, y.
 @group(1) @binding(13) var<uniform> layer_tiles: array<vec4<u32>, 1024>;
+// Plants (`terrain/rt.rs`, `terrain/plants.rs`): per triangle its normal
+// (object space) and part; an instance's custom data holds TR_PLANT_FLAG
+// and its first triangle here.
+@group(1) @binding(15) var<storage, read> plant_normals: array<vec4<f32>>;
+const TR_PLANT_FLAG: u32 = 0x800000u;
+
+// A plant's surface at a hit: its triangle's normal turned into the TLAS's
+// axes and towards the ray (`dir`, body-fixed), and its part.
+fn tr_plant_surface(p: Planet, hp: ptr<function, SurfaceHit>, custom: u32, prim: u32, o2w: mat4x3<f32>, dir: vec3<f32>) {
+    var h = *hp;
+    let nt = plant_normals[(custom & 0x7fffffu) + prim];
+    var nb = normalize(o2w * vec4<f32>(nt.xyz, 0.0));
+    if (dot(nb, dir) > 0.0) {
+        nb = -nb;
+    }
+    h.normal = normalize(planet_inertial(p, nb, h.time));
+    h.plant = u32(nt.w + 0.5) + 1u;
+    // Above the ground: the land's biomes don't apply.
+    h.height = 1.0;
+    *hp = h;
+}
 
 // Must match `terrain/tilegen.rs` and `terrain/rt.rs`.
 const TR_SAMPLES: f32 = 128.0;
@@ -155,6 +176,10 @@ fn terrain_surface_hit(p: Planet, o: vec3<f32>, dir: vec3<f32>, u_max: f32, fp: 
         return h;
     }
 
+    if ((hit.instance_custom_data & TR_PLANT_FLAG) != 0u) {
+        tr_plant_surface(p, &h, hit.instance_custom_data, hit.primitive_index, hit.object_to_world, bdir);
+        return h;
+    }
     tr_tile_surface(p, &h, hit.instance_custom_data, hit.primitive_index, hit.barycentrics);
     return h;
 }
@@ -271,7 +296,7 @@ fn tr_ground_uv(tile: vec4<u32>, st: vec2<f32>, repeat: u32) -> vec2<f32> {
 // and occlusion.
 fn terrain_micro(p: Planet, h: SurfaceHit, mat: Material) -> Micro {
     var out = Micro(1.0, h.normal, 1.0);
-    if (!h.tiled || h.height < 0.0) {
+    if (!h.tiled || h.height < 0.0 || h.plant != 0u) {
         return out;
     }
     // Patches of lighter and darker ground over metres to tens of metres,
@@ -442,7 +467,11 @@ fn terrain_reflection(p: Planet, h: SurfaceHit, view: vec3<f32>, sun: SunLight, 
     m.body = normalize(bpos);
     m.pos = planet_inertial(p, bpos, m.time);
     m.lod = max(h.lod, 1e-5);
-    tr_tile_surface(p, &m, hit.instance_custom_data, hit.primitive_index, hit.barycentrics);
+    if ((hit.instance_custom_data & TR_PLANT_FLAG) != 0u) {
+        tr_plant_surface(p, &m, hit.instance_custom_data, hit.primitive_index, hit.object_to_world, r);
+    } else {
+        tr_tile_surface(p, &m, hit.instance_custom_data, hit.primitive_index, hit.barycentrics);
+    }
     let mat = planet_material(planet_terrain(p), m, p.detail.y > 0.5);
     let e_sun = spec_mul(sun.irradiance, atmo_sun_transmittance(p, m.pos, sun));
     let e_sky = atmo_sky_irradiance(p, m.pos, m.normal, sun);

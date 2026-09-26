@@ -165,9 +165,142 @@ fn frond(m: &mut PlantMesh, base: V3, dir_h: V3, rise: f64, len: f64, droop: f64
     }
 }
 
+/// Palms grow in cells of the cube face's grid about this big (m), at
+/// most one a cell.
+pub const PALM_CELL_M: f64 = 9.0;
+/// Out to this far from the eye (km).
+pub const PALM_RANGE_KM: f64 = 0.16;
+
+/// A place a palm might stand: body-fixed unit direction, variant, and its
+/// lean (rad about up) and the cell's two random numbers for thinning.
+#[derive(Clone, Copy, Debug)]
+pub struct Candidate {
+    pub dir: V3,
+    pub variant: u32,
+    pub yaw: f64,
+    pub keep: f64,
+}
+
+/// The face-grid level whose tiles are about [`PALM_CELL_M`] across.
+pub fn palm_cell_level(radius_km: f64) -> u8 {
+    let tile_m = |l: u8| radius_km * std::f64::consts::FRAC_PI_2 / (1u64 << l) as f64 * 1000.0;
+    (0..=super::tiles::MAX_LEVEL)
+        .min_by(|&a, &b| (tile_m(a) / PALM_CELL_M).ln().abs().total_cmp(&(tile_m(b) / PALM_CELL_M).ln().abs()))
+        .unwrap_or(20)
+}
+
+/// Candidate palms around body-fixed `eye_km` on a planet of
+/// `radius_km` with `seed`: one in about a third of the cells, jittered in
+/// the cell, the same ones from anywhere (hashed from the cell).
+pub fn palm_candidates(eye_km: V3, radius_km: f64, seed: u32) -> Vec<Candidate> {
+    use super::tiles::TileId;
+    let level = palm_cell_level(radius_km);
+    let dir = vec3::normalize(eye_km);
+    let here = TileId::containing(dir, level);
+    let n = 1i64 << level;
+    let reach = (PALM_RANGE_KM * 1000.0 / PALM_CELL_M).ceil() as i64 + 1;
+    let mut out = Vec::new();
+    for dy in -reach..=reach {
+        for dx in -reach..=reach {
+            let (x, y) = (here.x as i64 + dx, here.y as i64 + dy);
+            if x < 0 || y < 0 || x >= n || y >= n {
+                continue;
+            }
+            let cell = TileId { face: here.face, level, x: x as u32, y: y as u32 };
+            let mut rng =
+                Rng((x as u64) << 32 ^ y as u64 ^ (here.face as u64) << 60 ^ (seed as u64).wrapping_mul(0x9e37_79b9));
+            if rng.next() > 0.33 {
+                continue;
+            }
+            let (s, t) = (rng.range(0.1, 0.9), rng.range(0.1, 0.9));
+            let d = cell.direction(s, t);
+            if vec3::norm(vec3::sub(vec3::scale(d, radius_km), vec3::scale(dir, radius_km))) > PALM_RANGE_KM {
+                continue;
+            }
+            out.push(Candidate {
+                dir: d,
+                variant: (rng.next() * 4.0) as u32,
+                yaw: rng.range(0.0, std::f64::consts::TAU),
+                keep: rng.next(),
+            });
+        }
+    }
+    out
+}
+
+/// Rays straight down from body-fixed points (km) 0.5 km above the datum
+/// (origin km from `anchor_km`, direction, length km).
+pub fn rays_from(points: &[V3], anchor_km: V3) -> Vec<(V3, V3, f64)> {
+    points.iter().map(|&p| (vec3::sub(p, anchor_km), vec3::scale(vec3::normalize(p), -1.0), 1.0)).collect()
+}
+
+/// Where palms might stand around body-fixed `eye_km` on a tropical world
+/// with seas (none on others): the candidates in the tropics.
+pub fn palm_sites(planet: &kerr::planets::Planet, eye_km: V3) -> Vec<Candidate> {
+    let wet = planet.kind == kerr::planets::PlanetKind::Ocean && planet.atmosphere.is_some();
+    if !wet {
+        return Vec::new();
+    }
+    let tropics = 30f64.to_radians().sin();
+    palm_candidates(eye_km, planet.radius_km, planet.seed).into_iter().filter(|c| c.dir[2].abs() < tropics).collect()
+}
+
+/// Points (body-fixed km) 0.5 km above the datum over `sites`, to cast
+/// down from ([`rays_from`]).
+pub fn site_points(sites: &[Candidate], radius_km: f64) -> Vec<V3> {
+    sites.iter().map(|c| vec3::scale(c.dir, radius_km + 0.5)).collect()
+}
+
+/// The palms at `sites` whose ground (`hits` of the rays down from
+/// [`site_points`]) is 2.5–35 m above the sea, thinning out inland, each
+/// leaning its way.
+pub fn palms_from_hits(
+    sites: &[Candidate],
+    hits: &[Option<super::rt::CastHit>],
+    radius_km: f64,
+) -> Vec<super::rt::PlantInstance> {
+    sites
+        .iter()
+        .zip(hits)
+        .filter_map(|(c, hit)| {
+            let ground_km = 0.5 - hit.as_ref()?.t_km as f64;
+            let h_m = ground_km * 1000.0;
+            let keep = 0.9 * (1.0 - ((h_m - 8.0) / 27.0).clamp(0.0, 1.0));
+            if !(2.5..35.0).contains(&h_m) || c.keep > keep {
+                return None;
+            }
+            let up = c.dir;
+            let e = vec3::normalize(vec3::cross([0.0, 0.0, 1.0], up));
+            let n = vec3::cross(up, e);
+            let lean = vec3::add(vec3::scale(e, c.yaw.cos()), vec3::scale(n, c.yaw.sin()));
+            Some(super::rt::PlantInstance {
+                variant: c.variant,
+                foot_km: vec3::scale(up, radius_km + ground_km),
+                up,
+                lean,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Candidates are the same from anywhere near, about a third of the
+    /// cells within range.
+    #[test]
+    fn palm_candidates_are_fixed_to_the_ground() {
+        let r = 6371.0;
+        let eye = vec3::scale(vec3::normalize([0.3, 0.8, 0.2]), r);
+        let a = palm_candidates(eye, r, 7);
+        let moved = vec3::scale(vec3::normalize(vec3::add(eye, [0.03, -0.02, 0.0])), r);
+        let b = palm_candidates(moved, r, 7);
+        let common = a.iter().filter(|c| b.iter().any(|d| vec3::norm(vec3::sub(c.dir, d.dir)) < 1e-12)).count();
+        assert!(common > a.len() / 2, "{common} of {}", a.len());
+        let cells = std::f64::consts::PI * (PALM_RANGE_KM * 1000.0 / PALM_CELL_M).powi(2);
+        assert!((a.len() as f64) > 0.2 * cells && (a.len() as f64) < 0.45 * cells, "{} of ~{cells}", a.len());
+    }
 
     /// Palms are palm-sized, closed-form (every index valid, one normal a
     /// triangle, unit length) and differ by seed.

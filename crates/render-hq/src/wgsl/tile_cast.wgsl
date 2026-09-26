@@ -28,7 +28,8 @@ fn cs_tile_cast(@builtin(global_invocation_id) gid: vec3<u32>) {
     let a = cast_rays[2u * i];
     let b = cast_rays[2u * i + 1u];
     var rq: ray_query;
-    rayQueryInitialize(&rq, terrain_tlas, RayDesc(RAY_FLAG_FORCE_OPAQUE, 0xffu, 0.0, a.w, a.xyz, b.xyz));
+    // The tiles alone (mask 1), not the plants on them.
+    rayQueryInitialize(&rq, terrain_tlas, RayDesc(RAY_FLAG_FORCE_OPAQUE, 0x01u, 0.0, a.w, a.xyz, b.xyz));
     rayQueryProceed(&rq);
     let hit = rayQueryGetCommittedIntersection(&rq);
     if (hit.kind == RAY_QUERY_INTERSECTION_NONE) {

@@ -10,6 +10,11 @@
 //!
 //! Skirts hang below each tile's edges so rays can't slip between tiles of
 //! different levels.
+//!
+//! Plants ([`super::plants`]) are instances in the same TLAS: a BLAS per
+//! variant, flagged in their custom data ([`PLANT_FLAG`], with their first
+//! triangle in the normals table the shader reads) and masked apart
+//! ([`PLANT_MASK`]), so ground queries see the tiles alone.
 
 use super::tilegen::TILE_TEXELS;
 use super::tiles::{TILE_SAMPLES, TileId};
@@ -28,6 +33,95 @@ pub const GRID_VERTS: u32 = (MESH_N + 1) * (MESH_N + 1);
 pub const MESH_VERTS: u32 = GRID_VERTS + 4 * (MESH_N + 1);
 /// Triangles of the grid; the skirts' come after them.
 pub const GRID_TRIANGLES: u32 = 2 * MESH_N * MESH_N;
+/// Instance masks: tiles, plants. Must match `terrain_rq.wgsl` and
+/// `tile_cast.wgsl`.
+pub const TILE_MASK: u8 = 0x01;
+pub const PLANT_MASK: u8 = 0x02;
+/// A plant instance's custom data: this flag and its variant's first
+/// triangle in the normals table. Must match `TR_PLANT_FLAG`.
+pub const PLANT_FLAG: u32 = 1 << 23;
+/// Plant instances in the TLAS at most.
+pub const MAX_PLANTS: u32 = 2048;
+/// Palm variants (seeds 1…).
+pub const PALM_VARIANTS: u32 = 4;
+
+/// A plant to place: its variant, its foot (body-fixed km from the
+/// planet's centre), up there, and the horizontal way it leans.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlantInstance {
+    pub variant: u32,
+    pub foot_km: V3,
+    pub up: V3,
+    pub lean: V3,
+}
+
+/// The plants' meshes on the GPU.
+pub struct PlantGeometry {
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    /// Per triangle: normal (object space) and part, for the shader.
+    pub normals: wgpu::Buffer,
+    /// Per variant: first vertex, vertices, first index, indices.
+    ranges: Vec<[u32; 4]>,
+    first_triangle: Vec<u32>,
+    blas: Vec<wgpu::Blas>,
+    built: bool,
+}
+
+impl PlantGeometry {
+    fn new(device: &wgpu::Device) -> Self {
+        let (mut positions, mut indices, mut normals) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut ranges, mut first_triangle) = (Vec::new(), Vec::new());
+        for v in 0..PALM_VARIANTS {
+            let m = super::plants::palm(v as u64 + 1);
+            ranges.push([
+                positions.len() as u32,
+                m.positions.len() as u32,
+                indices.len() as u32,
+                m.indices.len() as u32,
+            ]);
+            first_triangle.push(normals.len() as u32);
+            positions.extend(m.positions);
+            indices.extend(m.indices);
+            normals.extend(m.normals);
+        }
+        let buffer = |label, contents: &[u8], usage| {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
+        };
+        let blas = ranges
+            .iter()
+            .map(|r| {
+                device.create_blas(
+                    &wgpu::CreateBlasDescriptor {
+                        label: Some("plant"),
+                        flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+                        update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+                    },
+                    wgpu::BlasGeometrySizeDescriptors::Triangles { descriptors: vec![Self::size(r)] },
+                )
+            })
+            .collect();
+        Self {
+            vertices: buffer("plant vertices", bytemuck::cast_slice(&positions), wgpu::BufferUsages::BLAS_INPUT),
+            indices: buffer("plant indices", bytemuck::cast_slice(&indices), wgpu::BufferUsages::BLAS_INPUT),
+            normals: buffer("plant normals", bytemuck::cast_slice(&normals), wgpu::BufferUsages::STORAGE),
+            ranges,
+            first_triangle,
+            blas,
+            built: false,
+        }
+    }
+
+    fn size(r: &[u32; 4]) -> wgpu::BlasTriangleGeometrySizeDescriptor {
+        wgpu::BlasTriangleGeometrySizeDescriptor {
+            vertex_format: wgpu::VertexFormat::Float32x3,
+            vertex_count: r[1],
+            index_format: Some(wgpu::IndexFormat::Uint32),
+            index_count: Some(r[3]),
+            flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
+        }
+    }
+}
 const VERTEX_STRIDE: u64 = 16;
 
 /// The shared index list: grid quads as two triangles, (i, j), (i+1, j),
@@ -98,6 +192,7 @@ pub struct TerrainAccel {
     index_count: u32,
     blas: Vec<Option<wgpu::Blas>>,
     pub tlas: wgpu::Tlas,
+    pub plants: PlantGeometry,
     /// Instances in the TLAS as last built.
     pub instances: usize,
     cast_pipeline: wgpu::ComputePipeline,
@@ -120,7 +215,7 @@ impl TerrainAccel {
         });
         let tlas = device.create_tlas(&wgpu::CreateTlasDescriptor {
             label: Some("terrain"),
-            max_instances: layers,
+            max_instances: layers + MAX_PLANTS,
             flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
             update_mode: wgpu::AccelerationStructureUpdateMode::Build,
         });
@@ -167,6 +262,7 @@ impl TerrainAccel {
             index_count: list.len() as u32,
             blas: (0..layers).map(|_| None).collect(),
             tlas,
+            plants: PlantGeometry::new(device),
             instances: 0,
             cast_pipeline,
             cast_layout,
@@ -223,11 +319,12 @@ impl TerrainAccel {
     }
 
     /// Place the `drawn` tiles (with their layers) of a planet of
-    /// `radius_km` relative to `anchor_km` and rebuild the TLAS.
+    /// `radius_km` and the `plants` relative to `anchor_km` and rebuild the
+    /// TLAS.
     pub fn build_tlas(
         &mut self,
         enc: &mut wgpu::CommandEncoder,
-        drawn: &[(TileId, u32)],
+        (drawn, plants): (&[(TileId, u32)], &[PlantInstance]),
         radius_km: f64,
         anchor_km: V3,
     ) {
@@ -249,21 +346,84 @@ impl TerrainAccel {
                 1.0,
                 at[2] as f32,
             ];
-            self.tlas[n] = Some(wgpu::TlasInstance::new(blas, transform, layer, 0xff));
+            self.tlas[n] = Some(wgpu::TlasInstance::new(blas, transform, layer, TILE_MASK));
+            n += 1;
+        }
+        // Plants: metres in their meshes, km here; turned so the mesh's x
+        // leans their way and z is up.
+        let g = &self.plants;
+        for p in plants.iter().take(MAX_PLANTS as usize) {
+            let (x, z) = (p.lean, p.up);
+            let y = vec3::cross(z, x);
+            let at = vec3::sub(p.foot_km, anchor_km);
+            let s = 1e-3;
+            let transform = std::array::from_fn(|k| {
+                let (row, col) = (k / 4, k % 4);
+                (match col {
+                    0 => x[row] * s,
+                    1 => y[row] * s,
+                    2 => z[row] * s,
+                    _ => at[row],
+                }) as f32
+            });
+            let v = p.variant as usize % g.blas.len();
+            self.tlas[n] =
+                Some(wgpu::TlasInstance::new(&g.blas[v], transform, PLANT_FLAG | g.first_triangle[v], PLANT_MASK));
             n += 1;
         }
         for i in n..self.instances {
             self.tlas[i] = None;
         }
         self.instances = n;
-        enc.build_acceleration_structures(std::iter::empty(), [&self.tlas]);
+        // The plants' BLASes, once, with the first TLAS.
+        let sizes: Vec<_> = g.ranges.iter().map(PlantGeometry::size).collect();
+        let entries: Vec<wgpu::BlasBuildEntry> = if g.built {
+            Vec::new()
+        } else {
+            g.blas
+                .iter()
+                .zip(&g.ranges)
+                .zip(&sizes)
+                .map(|((blas, r), size)| wgpu::BlasBuildEntry {
+                    blas,
+                    geometry: wgpu::BlasGeometries::TriangleGeometries(vec![wgpu::BlasTriangleGeometry {
+                        size,
+                        vertex_buffer: &g.vertices,
+                        first_vertex: r[0],
+                        vertex_stride: 12,
+                        index_buffer: Some(&g.indices),
+                        first_index: Some(r[2]),
+                        transform_buffer: None,
+                        transform_buffer_offset: None,
+                    }]),
+                })
+                .collect()
+        };
+        enc.build_acceleration_structures(entries.iter(), [&self.tlas]);
+        self.plants.built = true;
     }
 
     /// Cast rays (origin km from the anchor, unit direction, length km)
     /// against the TLAS as last built; blocking (tests, ground queries).
     pub fn cast(&self, device: &wgpu::Device, queue: &wgpu::Queue, rays: &[(V3, V3, f64)]) -> Vec<Option<CastHit>> {
+        let pending = self.cast_submit(device, queue, rays);
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        pending.take(device).unwrap_or_else(|| vec![None; rays.len()])
+    }
+
+    /// Cast rays as [`TerrainAccel::cast`] does, without waiting: the hits
+    /// come from [`PendingCast::take`] a frame or two later.
+    pub fn cast_submit(&self, device: &wgpu::Device, queue: &wgpu::Queue, rays: &[(V3, V3, f64)]) -> PendingCast {
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         if rays.is_empty() {
-            return Vec::new();
+            ready.store(true, std::sync::atomic::Ordering::Release);
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("tile cast readback"),
+                size: 32,
+                usage: wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            return PendingCast { readback, count: 0, ready };
         }
         let f = |v: V3, w: f64| [v[0] as f32, v[1] as f32, v[2] as f32, w as f32];
         let data: Vec<[f32; 4]> = rays.iter().flat_map(|&(o, d, len)| [f(o, len), f(d, 0.0)]).collect();
@@ -311,21 +471,47 @@ impl TerrainAccel {
         }
         enc.copy_buffer_to_buffer(&output, 0, &readback, 0, size);
         queue.submit([enc.finish()]);
-        let slice = readback.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        let Ok(mapped) = slice.get_mapped_range() else { return vec![None; rays.len()] };
-        let v: &[[f32; 4]] = bytemuck::cast_slice(&mapped);
-        (0..rays.len())
-            .map(|i| {
-                let (a, b) = (v[2 * i], v[2 * i + 1]);
-                (a[0] >= 0.0).then(|| CastHit {
-                    t_km: a[0],
-                    layer: a[1].to_bits(),
-                    st: hit_st(a[2].to_bits(), [a[3], b[0]]),
+        let flag = ready.clone();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| flag.store(r.is_ok(), std::sync::atomic::Ordering::Release));
+        PendingCast { readback, count: rays.len(), ready }
+    }
+}
+
+/// Rays cast without waiting ([`TerrainAccel::cast_submit`]).
+pub struct PendingCast {
+    readback: wgpu::Buffer,
+    count: usize,
+    ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl PendingCast {
+    /// The hits, once the GPU has them (polling without waiting).
+    pub fn take(&self, device: &wgpu::Device) -> Option<Vec<Option<CastHit>>> {
+        if self.count == 0 {
+            return Some(Vec::new());
+        }
+        let _ = device.poll(wgpu::PollType::Poll);
+        if !self.ready.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        let hits = {
+            let mapped = self.readback.slice(..).get_mapped_range().ok()?;
+            let v: &[[f32; 4]] = bytemuck::cast_slice(&mapped);
+            (0..self.count)
+                .map(|i| {
+                    let (a, b) = (v[2 * i], v[2 * i + 1]);
+                    (a[0] >= 0.0).then(|| CastHit {
+                        t_km: a[0],
+                        layer: a[1].to_bits(),
+                        st: hit_st(a[2].to_bits(), [a[3], b[0]]),
+                    })
                 })
-            })
-            .collect()
+                .collect()
+        };
+        self.readback.unmap();
+        Some(hits)
     }
 }
 

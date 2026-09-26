@@ -349,6 +349,15 @@ impl NearField {
                 entry(11, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
                 entry(12, uniform()),
                 entry(13, uniform()),
+                // Plant triangles' normals and parts.
+                entry(
+                    15,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
             ]
         } else {
             Vec::new()
@@ -450,6 +459,9 @@ impl NearField {
                 wgpu::BindGroupEntry { binding: 12, resource: m.params.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 13, resource: terrain.tile_gen.layer_tiles.as_entire_binding() },
             ]);
+            if let Some(accel) = &terrain.tile_gen.accel {
+                entries.push(wgpu::BindGroupEntry { binding: 15, resource: accel.plants.normals.as_entire_binding() });
+            }
         }
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("near field"),

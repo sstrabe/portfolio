@@ -47,6 +47,9 @@ struct SurfaceHit {
     jitter: f32,
     // How much of the point is a boulder (`boulders.wgsl`; tiles only).
     boulder: f32,
+    // A plant (`terrain/plants.rs`): 0 none, else 1 + its part (bark,
+    // leaf, dead leaf).
+    plant: u32,
 }
 
 // The ground's centimetre detail at a hit (`terrain_micro`): brightness
@@ -505,7 +508,22 @@ fn material_rocky(tp: TerrainParams, h: f32, m: vec4<f32>) -> Material {
     return mat;
 }
 
+// Plants' parts: bark (grey-brown), live and dead leaves.
+fn plant_material(plant: u32) -> Material {
+    var mat: Material;
+    mat.emission = spec(0.0);
+    switch (plant) {
+        case 1u: { mat.albedo = spec_axpy(spec_ramp(420.0, 700.0), 0.1, spec(0.14)); }
+        case 2u: { mat.albedo = spec_scale(refl_vegetation(0.15), 1.15); }
+        default: { mat.albedo = refl_vegetation(1.0); }
+    }
+    return mat;
+}
+
 fn planet_material(tp: TerrainParams, hit: SurfaceHit, baked: bool) -> Material {
+    if (hit.plant != 0u) {
+        return plant_material(hit.plant);
+    }
     switch (tp.kind) {
         case KIND_OCEAN: {
             let flat = dot(hit.normal, normalize(hit.pos));
