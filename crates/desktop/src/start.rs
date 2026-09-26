@@ -968,7 +968,7 @@ mod tests {
         }
         let anchor = field.anchor_km().unwrap();
         let accel = field.tile_gen.accel.as_ref().unwrap();
-        let mut worst = 0.0f64;
+        let (mut worst, mut worst_near) = (0.0f64, 0.0f64);
         for k in 0..16 {
             let a = k as f64 * 0.4;
             let d_km = 0.002 * k as f64;
@@ -984,12 +984,20 @@ mod tests {
             let cast = accel.cast(&gpu.device, &gpu.queue, &[(from, vec3::scale(q, -1.0), 1.0)]);
             let t = cast[0].expect("ground below").t_km as f64;
             worst = worst.max((t - 0.01).abs());
+            if d_km <= 0.004 {
+                worst_near = worst_near.max((t - 0.01).abs());
+            }
         }
         // Within the finest tiles (under the eye) it's the same triangles;
         // farther out the cache may hold a coarser tile than the one drawn,
-        // which differs by the finer octaves' millimetres.
-        println!("CPU ground vs GPU rays out to 30 m: worst {:.3} mm", worst * 1e6);
-        assert!(worst < 1e-5, "{worst} km");
+        // which lacks the finer levels' octaves, gullies and boulder feet
+        // (the finest tiles are read back by the time one walks there).
+        println!(
+            "CPU ground vs GPU rays: within 4 m worst {:.3} mm, out to 30 m {:.3} mm",
+            worst_near * 1e6,
+            worst * 1e6
+        );
+        assert!(worst_near < 1e-5 && worst < 5e-5, "{worst_near} km, {worst} km");
         for (k, h) in hits[2..].iter().enumerate() {
             println!(
                 "towards {:3}°, 1.1° down: {}",
