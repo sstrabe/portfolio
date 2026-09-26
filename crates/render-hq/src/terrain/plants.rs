@@ -130,18 +130,19 @@ pub fn palm(seed: u64) -> PlantMesh {
     m
 }
 
-/// A tuft of grass, one of a family by `seed`: some twenty blades, 25–55 cm,
-/// springing from the foot and arching out, tapering to their tips.
+/// A tuft of grass, one of a family by `seed`: thirty to forty-five blades,
+/// 25–55 cm, springing from a patch half a metre across and arching out,
+/// tapering to their tips.
 pub fn grass_tuft(seed: u64) -> PlantMesh {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x6a55);
     let mut m = PlantMesh::default();
-    let blades = 18 + (rng.next() * 8.0) as usize;
+    let blades = 30 + (rng.next() * 16.0) as usize;
     for _ in 0..blades {
         let az = rng.range(0.0, std::f64::consts::TAU);
         let dir_h = [az.cos(), az.sin(), 0.0];
         let side = [-az.sin(), az.cos(), 0.0];
         let (len, lean, width) = (rng.range(0.25, 0.55), rng.range(0.15, 0.6), rng.range(0.008, 0.014));
-        let root = vec3::scale(dir_h, rng.range(0.0, 0.05));
+        let root = vec3::scale(dir_h, rng.range(0.0, 0.25).powf(1.5) * 2.0_f64.sqrt());
         let segs = 3;
         let mut prev: Option<[u32; 2]> = None;
         for i in 0..=segs {
@@ -403,6 +404,6 @@ mod tests {
         assert_ne!(palm(1).extent(), palm(2).extent());
         let g = grass_tuft(1);
         let (top, reach) = g.extent();
-        assert!((0.2..0.6).contains(&top) && reach < 0.5 && g.normals.iter().all(|n| n[3] == GRASS), "{top} {reach}");
+        assert!((0.2..0.6).contains(&top) && reach < 0.8 && g.normals.iter().all(|n| n[3] == GRASS), "{top} {reach}");
     }
 }
